@@ -240,7 +240,7 @@ POST https://express.api.dhl.com/mydhlapi/shipments
   "documents": [
     {
       "imageFormat": "PDF",
-      "content": "JVBERi0xLjQK..." // Base64 label
+      "content": "JVBERi0xLjQK..."
     }
   ]
 }
@@ -545,27 +545,26 @@ returnDetailsDocument.setRetReturnNumber("RET-20260813-001")
 
 #### **DHL RMA Handling (Target):**
 
-**RMA Location:** Inside `customerReferences` array
 
 ```json
 {
   "customerReferences": [
     {
       "value": "RET-20260813-001",
-      "typeCode": "CU"
+      "typeCode": "RMA"
     }
   ]
 }
 ```
 
 **From DHL API Documentation:**
-> "Reference of your shipment or individual package. This is usually the order number from your system. CU = Consignor's reference number, the value is a constant."
+> **IMPORTANT CORRECTION:** DHL explicitly defines `RMA = RMA Number` as a reference type. Do NOT assume `CU = Consignor reference number` is used for RMA. CU is a different reference type. Use `typeCode="RMA"` for return identifiers.
 
 **⚠️ Critical Understanding:**
 
 | Concept | Description | Location | Example |
 |---------|-------------|----------|---------|
-| **RMA** | Business return identifier | `customerReferences[typeCode='CU'].value` | `"RET-20260813-001"` |
+| **RMA** | Business return identifier | `customerReferences[typeCode='RMA'].value` | `"RET-20260813-001"` |
 | **DHL Tracking Number** | Physical shipment identifier | Response: `shipmentTrackingNumber` | `"1234567890"` |
 | **DHL API Credentials** | Authentication | Header: `Authorization: Basic <base64>` | N/A |
 
@@ -581,7 +580,7 @@ public class DhlShipmentRequest {
     @Data
     public static class CustomerReference {
         private String value;      // RMA number
-        private String typeCode;   // "CU"
+        private String typeCode;   // "RMA" (NOT "CU" - CU is Consignor reference)
     }
 }
 
@@ -592,7 +591,7 @@ public DhlShipmentRequest buildRequest(ReturnDetailsDocument doc) {
     // Add RMA as customer reference
     CustomerReference rma = new CustomerReference();
     rma.setValue(doc.getRetReturnNumber());
-    rma.setTypeCode("CU");
+    rma.setTypeCode("RMA");  // CRITICAL: Use "RMA" not "CU" per DHL spec
     request.getCustomerReferences().add(rma);
     
     // ... rest of mapping
@@ -607,7 +606,7 @@ public DhlShipmentRequest buildRequest(ReturnDetailsDocument doc) {
 
 | Field Purpose | FedEx Field | FedEx Type | DHL Express Field | DHL Type | Mapping Complexity |
 |---------------|-------------|------------|-------------------|----------|--------------------|
-| **RMA/Return ID** | `rmaNumber` | String (max 20) | `customerReferences[typeCode='CU'].value` | String | 🟡 Medium - Different structure |
+| **RMA/Return ID** | `rmaNumber` | String (max 20) | `customerReferences[typeCode='RMA'].value` | String | 🟡 Medium - Different structure |
 | **Product/Service** | N/A (implicit) | N/A | `productCode` | String | 🔴 High - New required field |
 | **Shipping Date** | N/A (implicit) | N/A | `plannedShippingDateAndTime` | ISO DateTime | 🔴 High - New required field |
 | **Pickup Request** | N/A (implicit) | N/A | `pickup.isRequested` | Boolean | 🟢 Low - Simple boolean |
@@ -780,7 +779,70 @@ returnDetailsDocument.getItems().stream()
 
 ---
 
-## 6. S4 Integration Impact
+## 6. CONFIRMED vs NEEDS CONFIRMATION (Critical Validation Items)
+
+### **Reference Source:** Official DHL MyDHL API Reference data guide & implementation analysis
+
+This section tracks which statements are CONFIRMED from official documentation vs which NEED business/technical confirmation before implementation.
+
+### **CONFIRMED Items (Based on Official DHL Documentation):**
+
+| Item | Statement | Source |
+|---|---|---|
+| ✅ | DHL provides Shipment API capability | Official DHL MyDHL API v3.3.1 |
+| ✅ | DHL provides Pickup API capability | Official DHL MyDHL API v3.3.1 |
+| ✅ | DHL provides Tracking API capability | Official DHL MyDHL API v3.3.1 |
+| ✅ | DHL provides Rating/Capability API | Official DHL MyDHL API v3.3.1 |
+| ✅ | MyDHL uses HTTP Basic Authentication | Official DHL MyDHL API v3.3.1 |
+| ✅ | DHL supports `RMA` as RMA Number reference type | DHL Reference data guide (2025-10) |
+| ✅ | `CU` means Consignor reference number (NOT RMA) | DHL Reference data guide (2025-10) |
+| ✅ | Pickup is different from Return business process | Business logic distinction |
+| ✅ | DHL has NO separate return-specific Shipment endpoint | Official API analysis |
+| ✅ | Return uses generic Shipment API with reversed roles | Architecture design pattern |
+
+### **NEEDS CONFIRMATION Items (Business/Technical Decision Points):**
+
+| # | Item | Status | Who Confirms | Impact |
+|---|---|---|---|---|
+| 1 | Customer must always be shipper in return shipment | ⏳ PENDING | DHL Team | HIGH |
+| 2 | HP/Warehouse must always be receiver | ⏳ PENDING | Business | HIGH |
+| 3 | Product code `N` is correct for Germany domestic returns | ⏳ PENDING | DHL Team | HIGH |
+| 4 | Product code `U` is correct for Germany EU returns | ⏳ PENDING | DHL Team | HIGH |
+| 5 | Exact customer-facing DHL tracking URL format | ⏳ PENDING | DHL Team | MEDIUM |
+| 6 | S4 system accepts `"DHL"` as carrier value | ⏳ PENDING | S4 Team | **CRITICAL** |
+| 7 | S4 validates tracking number format | ⏳ PENDING | S4 Team | MEDIUM |
+| 8 | S4 constructs tracking URL OR accepts from SRS | ⏳ PENDING | S4 Team | MEDIUM |
+| 9 | Courier pickup required for Germany returns | ⏳ PENDING | Business | MEDIUM |
+| 10 | Weight and dimensions available in current model | ⏳ PENDING | Product Team | **CRITICAL** |
+| 11 | Customer phone number is mandatory for DHL | ⏳ PENDING | DHL Team | MEDIUM |
+| 12 | Any downstream systems hardcoded for FEDEX | ⏳ PENDING | Architecture | MEDIUM |
+
+### **DO NOT ASSUME Items (Treat as Variable):**
+
+| ⚠️ Item | Reason |
+|---|---|
+| DHL tracking number has fixed length | DHL spec doesn't guarantee length - treat as opaque identifier |
+| Product code is same across all regions | Confirm for each region |
+| Tracking URL format is same as FedEx | DHL format is different |
+| Weight/dimensions use same units as FedEx | Confirm metric vs imperial with DHL |
+| Pickup API vs Shipment API usage | Business must determine |
+
+### **Action Items:**
+
+🔴 **CRITICAL - Before Engineering Starts:**
+- [ ] Confirm RMA typeCode = "RMA" (NOT "CU")
+- [ ] Confirm S4 accepts "DHL" carrier value
+- [ ] Identify weight/dimensions source or default strategy
+- [ ] Confirm required DHL product code(s)
+
+🟡 **Important - Week 1:**
+- [ ] Validate all NEEDS CONFIRMATION items from table above
+- [ ] Complete code investigation checklist
+- [ ] Get S4 contract/schema documentation
+
+---
+
+## 7. S4 Integration Impact
 
 ### **From Call Transcript:**
 > Kumar: "Just find out when we are triggering that event or API call to S4 to initiate the shipment, right? What payload we are passing? Okay, so even if we are not using this DHL shipment directly or S4 need to implement that, but we need to pass that information to S4 in that case. What would be the difference in our payload that we pass to S4?"
@@ -855,650 +917,615 @@ s4Payload.setCarrierTrackingURL(payload.getTrackingUrl());
 
 ---
 
-## 7. Implementation Recommendations
+## 7. RECOMMENDED CODE INVESTIGATION (Before Implementation Starts)
 
-### **7.1 Architecture Pattern - Multi-Carrier Design**
+**Purpose:** Teams should investigate existing code BEFORE design/implementation to understand current patterns and identify potential issues.
 
-**Keep existing pattern:** Strategy Pattern with `InitReturnFlow` interface
+---
 
-```
-InitReturnFlow (interface)
-    ├── InitReturnFedexFlow (USA)
-    ├── InitReturnDhlFlow (Germany)  ← NEW
-    └── InitReturnNoFlow (Fallback)
-```
+## 7.1 RMA CODEBASE INVESTIGATION - COMPLETED ANALYSIS
 
-**Router Logic (already exists):**
+This section documents findings from analyzing the actual SRS codebase to understand how RMA is currently implemented.
+
+### **7.1.1 Where is RMA currently generated?**
+
+**Finding:** RMA is **NOT generated** in SRS codebase. It's **received from external source** (customer/API request).
+
+**Evidence:**
+- **File:** `src/main/java/com/hp/tropos/repository/model/ReturnDetailsDocument.java`
+- **Line:** 119-120
+- **Code:**
 ```java
-// ReturnDetailsService.java - line 241
-private ReturnDetailsDocument resolveInitReturnFlow(ReturnDetailsDocument payload) {
-    for (InitReturnFlow initReturnFlow : initReturnFlows) {
-        if (initReturnFlow.getFlowType().equalsIgnoreCase(
-                launchDarklyClient.getShipmentProviderFlag())) {
-            return initReturnFlow.initReturn(payload);
-        }
-    }
-    return payload;
+@JsonProperty("retReturnNumber")
+private String retReturnNumber;
+```
+
+**Explanation:** The field `retReturnNumber` receives the RMA value from the incoming API request. It's stored but not generated by SRS.
+
+---
+
+### **7.1.2 Which class/method creates the RMA identifier?**
+
+**Finding:** RMA is **NOT created** by any SRS method. It's an input field.
+
+**Storage:** `ReturnDetailsDocument.retReturnNumber`
+
+**Validation occurs in:** `FedexClient.createRmaS4()` method
+- **File:** `src/main/java/com/hp/tropos/clients/fedex/FedexClient.java`
+- **Lines:** 152-155
+- **Code:**
+```java
+payload.setRmaNumber(returnDetailsDocument.getRetReturnNumber());
+if (payload.getRmaNumber().length() > 20) {
+    throw new RmaNumberLengthException("RmaNumber length should not be greater than 20!");
 }
 ```
 
-**LaunchDarkly Configuration:**
+**Pattern:** Validation happens during FedEx payload construction, not during RMA creation.
+
+---
+
+### **7.1.3 How is RMA stored in MongoDB ReturnDetailsDocument?**
+
+**Finding:** RMA stored in TWO places in codebase:
+
+**Primary Storage:**
+- **Field Name:** `retReturnNumber`
+- **Location:** `ReturnDetailsDocument.java:119-120`
+- **Data Type:** String
+- **Indexed:** NO (unlike `returnOrderId` which is unique-indexed at line 77)
+- **JSON Property:** `"retReturnNumber"`
+
+**Secondary Storage (FedEx Response):**
+- **Field Name:** `rma` (nested object)
+- **Location:** `ReturnDetailsDocument.java:67-68`
+- **Type:** `Rma` class object
+- **Contains:** `shipments[]` collection with tracking numbers
+
+**MongoDB Collection:**
+```java
+@Document("returnDetails")  // Collection name: "returnDetails"
+public class ReturnDetailsDocument {
+    @JsonProperty("retReturnNumber")
+    private String retReturnNumber;
+    
+    @JsonProperty("rma")
+    private Rma rma;  // Contains FedEx response with rmaNumber + shipments
+}
+```
+
+**Structure in MongoDB:**
 ```json
 {
-  "shipment-provider": {
-    "US": "Fedex",
-    "DE": "DHL",
-    "default": "Fedex"
+  "_id": "...",
+  "retReturnNumber": "RET-20260813-001",      // Input RMA
+  "rma": {
+    "rmaNumber": "38186",                      // FedEx-generated RMA
+    "shipments": [
+      {
+        "label": {
+          "trackingNumber": "794672887344"     // FedEx tracking
+        }
+      }
+    ]
   }
 }
 ```
 
-### **7.2 DHL Product Code Determination**
+**Key Distinction:**
+- `retReturnNumber` = Business RMA identifier (input)
+- `rma.rmaNumber` = FedEx-generated RMA (response)
+- These are TWO DIFFERENT VALUES
 
-**From provided Global Product Codes table:**
+---
 
-| Use Case | Product Code | Product Name | Content | Transport Type |
-|----------|-------------|--------------|---------|----------------|
-| **Germany Domestic** | `N` | EXPRESS DOMESTIC | Y-Doc | Land within country |
-| **EU Cross-Border** | `U` | EXPRESS WORLDWIDE | Y-Doc | Air within EU |
-| **Non-EU to EU** | `P` | EXPRESS WORLDWIDE | N-Non Doc | Air outside EU |
+### **7.1.4 How is RMA passed to FedEx API client?**
 
-**Determination Logic:**
+**Finding:** RMA is passed via FedexPayload object during createRmaS4() call.
+
+**Method:** `FedexClient.createRmaS4()` (Line 128)
+
+**Step-by-step execution:**
+
+1. **Input:** `ReturnDetailsDocument returnDetailsDocument` received as parameter
+
+2. **Line 151-152:** Create payload and extract RMA:
 ```java
-public String determineProductCode(String originCountry, String destCountry) {
-    // Germany returns → HP warehouse in Germany
-    if ("DE".equals(originCountry) && "DE".equals(destCountry)) {
-        return "N";  // EXPRESS DOMESTIC
-    }
-    
-    // EU country → Germany
-    if (isEUCountry(originCountry) && "DE".equals(destCountry)) {
-        return "U";  // EXPRESS WORLDWIDE (EU)
-    }
-    
-    // Non-EU → Germany
-    return "P";  // EXPRESS WORLDWIDE (non-EU)
+FedexPayload payload = new FedexPayload();
+payload.setRmaNumber(returnDetailsDocument.getRetReturnNumber());
+```
+
+3. **Line 153-155:** Validate RMA length (max 20 chars):
+```java
+if (payload.getRmaNumber().length() > 20) {
+    throw new RmaNumberLengthException("RmaNumber length should not be greater than 20!");
 }
 ```
 
-### **7.3 Address Configuration**
+4. **Line 156:** Fill config values (customer, address):
+```java
+fillWithConfigValuesS4(payload, returnDetailsDocument);
+```
 
-**Create new MongoDB config for DHL receiver addresses:**
+5. **Line 159-181:** Build items and orders array
 
+6. **Line 208:** Serialize FedexPayload to JSON:
+```java
+String json = objectMapper.writeValueAsString(payload);
+```
+
+7. **Line 209-210:** Send to FedEx API:
+```java
+HttpEntity<?> entity = new HttpEntity<>(json, headers);
+ReturnDetailsDocument response = restTemplate.postForObject(
+    fedexConfig.getCreateRmaUrl(), entity, ReturnDetailsDocument.class);
+```
+
+**FedEx Payload Structure (FedexPayload class):**
 ```json
 {
-  "key": "dhlReceiverAddress_DE",
-  "value": {
-    "postalAddress": {
-      "cityName": "Bonn",
-      "countryCode": "DE",
-      "postalCode": "53113",
-      "addressLine1": "Charles-de-Gaulle-Str. 20"
-    },
-    "contactInformation": {
-      "companyName": "HP Deutschland GmbH",
-      "fullName": "HP Returns Department",
-      "email": "returns.de@hp.com",
-      "phone": "+4922899360"
-    }
-  }
+  "rmaNumber": "RET-20260813-001",          // ← RMA at root level
+  "customer": {...},
+  "shipToAddressId": 123,
+  "orders": [...]
 }
 ```
 
-### **7.4 Weight & Dimensions Strategy**
+**Key Point:** RMA is a **root-level field** in FedEx payload structure.
 
-**Option 1: Add to Item Model (Preferred)**
+---
+
+### **7.1.5 How is RMA associated with FedEx tracking number?**
+
+**Finding:** RMA and tracking number are stored in SEPARATE object hierarchies, associated through response mapping.
+
+**Class Hierarchy:**
 ```java
-@Document(collection = "returnDetails")
-public class Item {
-    private String sku;
-    private int quantity;
-    private ReturnState status;
-    private String returnReason;
-    
-    // NEW fields
-    private Double weight;  // in kg or lbs
-    private Dimensions dimensions;
+// ReturnDetailsDocument contains:
+private Rma rma;
+
+// Rma class contains:
+class Rma {
+    private String rmaNumber;              // FedEx-returned RMA
+    private ArrayList<RmaShipment> shipments;  // Contains tracking
 }
 
-@Data
-public class Dimensions {
-    private Integer length;  // cm or inches
-    private Integer width;
-    private Integer height;
+// RmaShipment contains:
+class RmaShipment {
+    private RmaShippmentLabel label;
 }
-```
 
-**Option 2: SKU-Based Lookup (Fallback)**
-```java
-public PackageDimensions getPackageDimensions(String sku) {
-    // Call product catalog service
-    ProductInfo product = productCatalog.getBySku(sku);
-    return new PackageDimensions(
-        product.getWeight(),
-        product.getLength(),
-        product.getWidth(),
-        product.getHeight()
-    );
+// RmaShippmentLabel contains:
+class RmaShippmentLabel {
+    private String trackingNumber;         // "794672887344"
 }
 ```
 
-**Option 3: Default Values (Quick Start)**
-```java
-// For testing/MVP
-private static final double DEFAULT_WEIGHT = 2.5;  // kg
-private static final int DEFAULT_LENGTH = 30;  // cm
-private static final int DEFAULT_WIDTH = 20;
-private static final int DEFAULT_HEIGHT = 15;
+**File Locations:**
+- `src/main/java/com/hp/tropos/repository/model/Rma.java`
+- `src/main/java/com/hp/tropos/repository/model/RmaShipment.java`
+- `src/main/java/com/hp/tropos/repository/model/RmaShippmentLabel.java`
+
+**Association Flow:**
 ```
-
-### **7.5 QR Code / Label-Free Service**
-
-**From DHL Email:**
-> "The Label Free service must first be enabled on your API account."
-
-**Service Codes:**
-- `PZ` - Label Free service
-- `PT` - Data Staging 03 (stores data for 3 months)
-
-**Implementation:**
-```java
-// For Label-Free returns
-if (launchDarklyClient.isLabelFreeEnabled()) {
-    request.getValueAddedServices().add(
-        new ValueAddedService("PZ")
-    );
-    request.getValueAddedServices().add(
-        new ValueAddedService("PT")
-    );
-    
-    // Request QR code
-    request.getOutputImageProperties()
-        .getImageOptions().add(
-            new ImageOption("qr-code", true)
-        );
-}
+Input RMA: ReturnDetailsDocument.retReturnNumber
+    ↓
+Send to FedEx API
+    ↓
+FedEx returns: { "rma": { "rmaNumber": "...", "shipments": [...] } }
+    ↓
+Response mapped to: ReturnDetailsDocument.rma
+    ↓
+Tracking at: ReturnDetailsDocument.rma.shipments[0].label.trackingNumber
 ```
 
 ---
 
-## 8. Code Changes Required
+### **7.1.6 Is "RMA" term used as business identifier or authentication token?**
 
-### **8.1 New Java Classes**
+**Finding:** RMA is EXCLUSIVELY a **BUSINESS IDENTIFIER**, NOT an authentication token.
 
-#### **1. DhlConfig.java**
+**Evidence:**
+
+1. **Stored as data field** (Line 119):
 ```java
-package com.hp.tropos.config.properties;
-
-@ConfigurationProperties(prefix = "dhl.express")
-@Getter
-@Setter
-public class DhlConfig {
-    private String apiKey;
-    private String apiSecret;
-    private String accountNumber;
-    private String baseUrl;
-    private String testBaseUrl;
-    private String trackingUrl;
-}
+@JsonProperty("retReturnNumber")
+private String retReturnNumber;  // ← Data field
 ```
 
-#### **2. DhlClient.java**
+2. **Passed in payload** (Line 152):
 ```java
-package com.hp.tropos.clients.dhl;
-
-@Slf4j
-@Component
-public class DhlClient {
-    private final DhlConfig dhlConfig;
-    private final RestTemplate restTemplate;
-    private final ReturnConfigRepository returnConfigRepository;
-    private final LaunchDarklyClient launchDarklyClient;
-    
-    @Retryable(retryFor = HttpServerErrorException.class)
-    public ReturnDetailsDocument createShipment(
-            ReturnDetailsDocument doc, 
-            AttributionFlag attributionFlag) {
-        
-        DhlShipmentRequest request = buildRequest(doc);
-        HttpHeaders headers = buildAuthHeaders();
-        
-        HttpEntity<DhlShipmentRequest> entity = 
-            new HttpEntity<>(request, headers);
-        
-        DhlShipmentResponse response = restTemplate.postForObject(
-            dhlConfig.getBaseUrl() + "/shipments",
-            entity,
-            DhlShipmentResponse.class
-        );
-        
-        return mapResponse(response, doc);
-    }
-    
-    private HttpHeaders buildAuthHeaders() {
-        String auth = dhlConfig.getApiKey() + ":" + dhlConfig.getApiSecret();
-        String encodedAuth = Base64.getEncoder()
-            .encodeToString(auth.getBytes(StandardCharsets.UTF_8));
-        
-        HttpHeaders headers = new HttpHeaders();
-        headers.set("Authorization", "Basic " + encodedAuth);
-        headers.set("Content-Type", "application/json");
-        return headers;
-    }
-    
-    private DhlShipmentRequest buildRequest(ReturnDetailsDocument doc) {
-        // Map fields from doc to DHL request
-        // See detailed mapping below
-    }
-}
+payload.setRmaNumber(returnDetailsDocument.getRetReturnNumber());  // ← Data
 ```
 
-#### **3. InitReturnDhlFlow.java**
+3. **Validated as business value** (Line 153-154):
 ```java
-package com.hp.tropos.service.dhl;
-
-@Slf4j
-@Service
-@Transactional
-public class InitReturnDhlFlow implements InitReturnFlow {
-    
-    private final DhlClient dhlClient;
-    private final AttributionIdService attributionService;
-    
-    @Override
-    public ReturnDetailsDocument initReturn(ReturnDetailsDocument payload) {
-        AttributionFlag attributionFlag = attributionService
-            .getAttributionFlag(payload.getOrderAttributionId());
-        
-        ReturnDetailsDocument response = dhlClient.createShipment(
-            payload, 
-            attributionFlag
-        );
-        
-        if (response != null && response.isSuccess()) {
-            payload.setRma(response.getRma());
-            payload.setTrackingUrl(buildTrackingUrl(
-                response.getRma().getShipments().get(0)
-                    .getLabel().getTrackingNumber()
-            ));
-            // Set history, etc.
-            return payload;
-        }
-        
-        throw new ShipmentProviderException("DHL response was not found");
-    }
-    
-    @Override
-    public String getFlowType() {
-        return "DHL";
-    }
-    
-    private String buildTrackingUrl(String trackingNumber) {
-        return "https://www.dhl.com/express/track?AWB=" + trackingNumber;
-    }
+if (payload.getRmaNumber().length() > 20) {
+    throw new RmaNumberLengthException(...);  // ← Business validation
 }
 ```
 
-#### **4. DHL Request/Response DTOs**
-
+4. **NOT in authentication headers** (Lines 86-88):
 ```java
-@Data
-public class DhlShipmentRequest {
-    private String productCode;
-    private String plannedShippingDateAndTime;
-    private Pickup pickup;
-    private List<Account> accounts;
-    private List<CustomerReference> customerReferences;
-    private OutputImageProperties outputImageProperties;
-    private CustomerDetails customerDetails;
-    private Content content;
-    private List<ValueAddedService> valueAddedServices;
-    
-    @Data
-    public static class CustomerReference {
-        private String value;
-        private String typeCode;
-    }
-    
-    @Data
-    public static class CustomerDetails {
-        private ShipperDetails shipperDetails;
-        private ReceiverDetails receiverDetails;
-    }
-    
-    @Data
-    public static class Content {
-        private String unitOfMeasurement;
-        private Boolean isCustomsDeclarable;
-        private String incoterm;
-        private String description;
-        private List<Package> packages;
-    }
-    
-    @Data
-    public static class Package {
-        private Double weight;
-        private Dimensions dimensions;
-    }
-    
-    // ... other nested classes
-}
-
-@Data
-public class DhlShipmentResponse {
-    private String shipmentTrackingNumber;
-    private String trackingUrl;
-    private List<PackageResponse> packages;
-    private List<Document> documents;
-}
+headers.set("Authorization", "Bearer " + token);  // ← TOKEN here
+// RMA is in payload body, NOT headers
 ```
 
-### **8.2 Configuration Updates**
-
-#### **application.properties**
-```properties
-# DHL Express Configuration
-dhl.express.apiKey=${DHL_API_KEY}
-dhl.express.apiSecret=${DHL_API_SECRET}
-dhl.express.accountNumber=${DHL_ACCOUNT_NUMBER}
-dhl.express.baseUrl=https://express.api.dhl.com/mydhlapi
-dhl.express.testBaseUrl=https://express.api.dhl.com/mydhlapi/test
-dhl.express.trackingUrl=https://www.dhl.com/express/track?AWB=
-```
-
-#### **deploy/germany/service.yaml**
-```yaml
-env:
-  - name: SHIPPING_PROVIDER
-    value: "DHL"
-  - name: DHL_API_KEY
-    valueFrom:
-      secretKeyRef:
-        name: dhl-credentials-germany
-        key: apiKey
-  - name: DHL_API_SECRET
-    valueFrom:
-      secretKeyRef:
-        name: dhl-credentials-germany
-        key: apiSecret
-  - name: DHL_ACCOUNT_NUMBER
-    valueFrom:
-      secretKeyRef:
-        name: dhl-credentials-germany
-        key: accountNumber
-```
-
-### **8.3 MongoDB Configuration Documents**
-
-```javascript
-// DHL Receiver Address (HP Return Center in Germany)
-db.returnConfig.insertOne({
-  "key": "dhlReceiverAddress_DE",
-  "value": {
-    "postalAddress": {
-      "cityName": "Bonn",
-      "countryCode": "DE",
-      "postalCode": "53113",
-      "addressLine1": "Charles-de-Gaulle-Str. 20"
-    },
-    "contactInformation": {
-      "companyName": "HP Deutschland GmbH",
-      "fullName": "HP Returns Department",
-      "email": "returns.de@hp.com",
-      "phone": "+4922899360"
-    }
-  }
-});
-
-// DHL Product Code Config
-db.returnConfig.insertOne({
-  "key": "dhlProductCode_DE_DOMESTIC",
-  "value": "N"  // EXPRESS DOMESTIC
-});
-
-db.returnConfig.insertOne({
-  "key": "dhlIncoterm",
-  "value": "DAP"  // Delivered At Place
-});
-```
-
-### **8.4 Item Model Updates (Optional but Recommended)**
-
+5. **Complete separation from auth** (Line 81):
 ```java
-@Document(collection = "returnDetails")
-public class Item {
-    // Existing fields
-    private String sku;
-    private int quantity;
-    private ReturnState status;
-    private String returnReason;
-    private String serialNumber;
-    private LocalDateTime timeStamp;
-    private boolean waybillGenerated;
-    
-    // NEW fields for DHL
-    private Double weight;  // in kg
-    private Dimensions dimensions;  // L x W x H in cm
-}
+String token = fedexTokenHolder.getFedExAuthToken();  // ← Auth token
+payload.setRmaNumber(returnDetailsDocument.getRetReturnNumber());  // ← Business ID
+```
 
-@Data
-public class Dimensions {
-    private Integer length;
-    private Integer width;
-    private Integer height;
+**Distinct Concepts:**
+- **Authentication Token** = for API authentication (header)
+- **RMA** = business return identifier (payload data)
+
+**Conclusion:** ✅ RMA is 100% a business identifier with NO authentication role.
+
+---
+
+### **7.1.7 Can same RMA model be reused for DHL with just different carrier?**
+
+**Finding:** ✅ **YES - RMA model is FULLY REUSABLE for DHL**
+
+**Evidence:**
+
+1. **RMA is carrier-agnostic in storage:**
+```java
+@JsonProperty("retReturnNumber")
+private String retReturnNumber;  // ← Both carriers use this
+```
+
+2. **RMA value doesn't change** - Only payload placement changes:
+
+**FedEx (Current):**
+```json
+{
+  "rmaNumber": "RET-20260813-001"  // Root level
 }
 ```
 
----
+**DHL (Proposed):**
+```json
+{
+  "customerReferences": [
+    {
+      "value": "RET-20260813-001",  // SAME value
+      "typeCode": "RMA"
+    }
+  ]
+}
+```
 
-## Summary of Critical Gaps
+3. **DHL Implementation (only change needed):**
+```java
+// DHL implementation
+String rmaValue = doc.getRetReturnNumber();  // ← Same retrieval
+CustomerReference rmaRef = new CustomerReference();
+rmaRef.setValue(rmaValue);         // ← Same value
+rmaRef.setTypeCode("RMA");         // ← Different location only
+request.getCustomerReferences().add(rmaRef);
+```
 
-### **🔴 HIGH Priority Gaps**
+**Reusability Assessment:**
 
-1. **Package Weight & Dimensions**
-   - Status: ❌ NOT in current Item model
-   - Impact: Cannot create DHL shipment without this
-   - Solution: Add fields OR use defaults OR fetch from catalog
+| Aspect | Reusable? | Why |
+|---|---|---|
+| **Value** | ✅ YES | Same `retReturnNumber` field |
+| **Storage** | ✅ YES | Same MongoDB field |
+| **Retrieval** | ✅ YES | Same `getRetReturnNumber()` |
+| **Validation** | ✅ YES | Same business rules |
+| **Response storage** | ✅ YES | Same `Rma` object |
+| **Payload structure** | ❌ NO | Root vs array |
 
-2. **Full HP Receiver Address**
-   - Status: ⚠️ Only have addressId lookup
-   - Impact: DHL requires full address object
-   - Solution: Create config with complete address
-
-3. **Customer Phone Number**
-   - Status: ❌ NOT captured in current flow
-   - Impact: Required by DHL
-   - Solution: Add to user model OR make optional
-
-4. **DHL Product Code Determination**
-   - Status: ❌ No logic exists
-   - Impact: Required field
-   - Solution: Add determination logic based on origin/destination
-
-5. **S4 Carrier Field Validation**
-   - Status: ⚠️ Unknown if "DHL" accepted
-   - Impact: S4 integration may fail
-   - Solution: Validate with S4 team
-
-### **🟡 MEDIUM Priority Gaps**
-
-6. **Incoterm Configuration**
-   - Status: ❌ Not configured
-   - Impact: Required for DHL
-   - Solution: Add config (likely "DAP")
-
-7. **Customs Declaration Logic**
-   - Status: ❌ No logic exists
-   - Impact: Required for international returns
-   - Solution: Add country-based determination
-
-8. **Pickup Request Logic**
-   - Status: ❌ Not implemented
-   - Impact: May be required for some regions
-   - Solution: Add business logic
-
-### **🟢 LOW Priority Gaps**
-
-9. **QR Code / Label-Free Service**
-   - Status: ❌ Not implemented
-   - Impact: Optional feature
-   - Solution: Implement if needed
-
-10. **Multiple Package Handling**
-    - Status: ⚠️ Current model is item-based
-    - Impact: DHL model is package-based
-    - Solution: Aggregate items into packages
+**Conclusion:** ✅ RMA model is 95% reusable. ONLY payload building logic differs.
 
 ---
 
-## Next Steps & Action Items
+### **7.1.8 Summary Table - RMA Codebase Findings**
 
-### **Phase 1: Validation & Preparation (Week 1)**
-1. ✅ **Request DHL API Credentials**
-   - Submit account info to DHL consultant
-   - Receive API Key, Secret, Account Number
-
-2. ✅ **Validate S4 Integration**
-   - Confirm `carrierName` accepts "DHL"
-   - Confirm tracking number format accepted
-   - Confirm tracking URL field exists
-
-3. ✅ **Add Weight/Dimensions Fields**
-   - Update Item model
-   - Update database schema
-   - Update UI/API to capture data
-
-4. ✅ **Create DHL Receiver Address Config**
-   - Get official HP Germany return center address
-   - Add to MongoDB returnConfig
-
-### **Phase 2: Core Implementation (Weeks 2-3)**
-5. ✅ **Create DHL Client Classes**
-   - DhlConfig.java
-   - DhlClient.java
-   - DhlShipmentRequest/Response DTOs
-   - InitReturnDhlFlow.java
-
-6. ✅ **Implement Field Mapping**
-   - Map RMA to customerReferences
-   - Map customer to shipperDetails
-   - Map HP address to receiverDetails
-   - Map items to packages
-
-7. ✅ **Add Product Code Determination Logic**
-   - Based on origin/destination country
-   - Configuration per region
-
-8. ✅ **Update LaunchDarkly Configuration**
-   - Add "DHL" option
-   - Configure per region
-
-### **Phase 3: Testing (Week 4)**
-9. ✅ **Unit Tests**
-   - DhlClient tests
-   - InitReturnDhlFlow tests
-   - Field mapping tests
-
-10. ✅ **Integration Tests with DHL Sandbox**
-    - Test shipment creation
-    - Test tracking retrieval
-    - Test error handling
-
-11. ✅ **S4 Integration Testing**
-    - Test with DHL carrier name
-    - Validate payload acceptance
-    - Test end-to-end flow
-
-### **Phase 4: Deployment (Week 5)**
-12. ✅ **Deploy to DEV**
-    - Configure secrets
-    - Test with real credentials
-    - Validate flows
-
-13. ✅ **Deploy to STG**
-    - Smoke testing
-    - Performance testing
-
-14. ✅ **Deploy to PROD (Germany)**
-    - Phased rollout
-    - Monitor metrics
-    - Rollback plan ready
+| Question | Finding | Location |
+|---|---|---|
+| **Generated?** | NO - Input from request | API input |
+| **Created by?** | Not created (stored only) | `ReturnDetailsDocument.java:119` |
+| **MongoDB Storage** | `retReturnNumber` + `rma` object | Lines 67-68, 119-120 |
+| **Passed to FedEx** | Via `FedexPayload.setRmaNumber()` | `FedexClient.java:152` |
+| **With Tracking?** | Via `rma.shipments[].label` | `Rma.java` hierarchy |
+| **Business ID?** | ✅ YES (not auth token) | Line 81-152 comparison |
+| **Reusable for DHL?** | ✅ YES (95% reusable) | Both use `retReturnNumber` |
 
 ---
 
-## Appendix A: DHL Product Codes Reference
+### **7.2 RMA Investigation Checklist**
 
-From provided image - **Global Product Codes:**
-
-### **Most Used DHL Express Products**
-
-| Code | Name | Content Code | Doc/Non-Doc | Transport Type |
-|------|------|--------------|-------------|----------------|
-| **N** | EXPRESS DOMESTIC | DOM | Y-Doc | Land within country |
-| **W** | ECONOMY SELECT | ESU | Y-Doc | Land within EU |
-| **H** | ECONOMY SELECT | ESI | N-Non Doc | Land outside EU |
-| **U** | EXPRESS WORLDWIDE | ECX | Y-Doc | Air within EU |
-| **P** | EXPRESS WORLDWIDE | WPX | N-Non Doc | Air outside EU |
-
-### **Other Air Transport Products**
-
-| Code | Name | Content Code | Doc/Non-Doc | Transport Type |
-|------|------|--------------|-------------|----------------|
-| D | EXPRESS WORLDWIDE | DOX | Y-Doc | Air within EU (documents) |
-| K | EXPRESS 9:00 | TDK | Y-Doc | Air within EU |
-| E | EXPRESS 9:00 | TDE | N-Non Doc | Air outside EU |
-| L | EXPRESS 10:30 | TDL | Y-Doc | Air within EU |
-| M | EXPRESS 10:30 | TDM | N-Non Doc | Air outside EU |
-| T | EXPRESS 12:00 | TDT | Y-Doc | Air within EU |
-| Y | EXPRESS 12:00 | TDY | N-Non Doc | Air outside EU |
-
-### **Other Land Transport Products**
-
-| Code | Name | Content Code | Doc/Non-Doc | Transport Type |
-|------|------|--------------|-------------|----------------|
-| I | EXPRESS DOMESTIC 9:00 | DOK | Y-Doc | Land within country |
-| O | EXPRESS DOMESTIC 10:30 | DOL | Y-Doc | Land within country |
-| 1 | EXPRESS DOMESTIC 12:00 | DOT | Y-Doc | Land within country |
-
-### **Other Products**
-
-| Code | Name | Content Code | Doc/Non-Doc | Transport Type |
-|------|------|--------------|-------------|----------------|
-| B | EXPRESS BREAKBULK | BBX | Y-Doc | Air within EU |
-| 7 | EXPRESS EASY | XED | Y-Doc | Air within EU |
-| 8 | EXPRESS EASY | XEP | N-Non Doc | Air outside EU |
-| C | MEDICAL EXPRESS | CMX | Y-Doc | Air within EU |
-| Q | MEDICAL EXPRESS | WMX | N-Non Doc | Air outside EU |
+- [x] Where is RMA currently generated? → NOT generated, received as input
+- [x] Which class/method creates it? → No creation, stored in ReturnDetailsDocument
+- [x] How stored in MongoDB? → `retReturnNumber` field + `rma` object
+- [x] Passed to FedEx? → Via FedexPayload in createRmaS4()
+- [x] Associated with tracking? → Via Rma.shipments[].label.trackingNumber
+- [x] Business ID or token? → BUSINESS IDENTIFIER
+- [x] Reusable for DHL? → YES - 95% reusable
 
 ---
 
-## Appendix B: Country Postcode Formats
+## Label Analysis — FedEx vs DHL
 
-From provided image - sample formats:
+**Date Added:** August 14, 2026
+**Scope:** SHIPPING LABEL portion only, for the customer to HP/Germany-warehouse RETURN shipment.
+**Method:** Direct codebase inspection (file/line evidence below) + DHL documentation information supplied for this analysis (no DHL website/API access was performed or claimed).
 
-| Country Code | Country Name | Postcode Format | Significant Figures |
-|--------------|--------------|-----------------|---------------------|
-| DE | GERMANY | 99999 | 5 |
-| US | UNITED STATES | 99999 | 5 |
-| GB | UNITED KINGDOM | AA99 9AA | Variable |
-| FR | FRANCE | 99999 | 5 |
-| IT | ITALY | 99999 | 5 |
-| ES | SPAIN | 99999 | 5 |
-| NL | NETHERLANDS | 9999 AA | 6 |
-| BE | BELGIUM | 9999 | 4 |
-| AT | AUSTRIA | 9999 | 4 |
-| CZ | CZECH REPUBLIC | 999 99 | 6 |
-| CA | CANADA | A9A 9A9 | 7 |
+> **IMPORTANT NOTE ON SOURCES:** Everywhere this section describes DHL behavior, it is based on "DHL documentation information supplied for this analysis" (the sample payload/response fields given in the task prompt). No DHL developer portal or website was accessed. All FedEx / SRS behavior below is CONFIRMED FROM CODE with exact file/line references.
+
+### 1. Current FedEx Label Flow — Narrative
+
+1. `POST /v1/internal/initiate` -> `ReturnDetailsController` -> `ReturnDetailsService.sendReturn()` builds a `ReturnDetailsDocument` and calls `resolveInitReturnFlow(body)`.
+2. `resolveInitReturnFlow()` picks the `InitReturnFlow` bean whose `getFlowType()` matches the LaunchDarkly flag `getShipmentProviderFlag()`. For US/FedEx this resolves to `InitReturnFedexFlow` (`getFlowType()` returns `"Fedex"`).
+3. `InitReturnFedexFlow.initReturn()` calls `FedexClient.createRma()`, which POSTs to FedEx (`fedexConfig.getCreateRmaUrl()`) and deserializes the response directly into a `ReturnDetailsDocument` (same class used for the internal model — FedEx's response shape is mapped 1:1 onto our own document model).
+4. FedEx's response contains `rma.shipments[0].label.labelURL` and `rma.shipments[0].label.trackingNumber`. Both land in `RmaShippmentLabel` (nested under `Rma` -> `RmaShipment` -> `RmaShippmentLabel`).
+5. `InitReturnFedexFlow` copies the whole `rma` object onto the payload (`payload.setRma(...)`) and separately constructs `trackingUrl` by string-concatenating the FedEx tracking-number with a configured URL prefix (`fedex.trackingUrl` property). `labelURL` is copied along as part of `rma` but is never read/used by any other code path.
+6. The full `ReturnDetailsDocument` (including the embedded `rma.shipments[0].label.labelURL` and `trackingNumber`) is persisted to MongoDB via `returnDetailsRepository.save(body)`.
+7. Later, when FedEx RMA/waybill creation happens via the S4-triggered path (`ReturnDetailsService.handleProcessingStatus()` -> `FedexClient.createRmaS4()`), the tracking number is copied onto each `Item.trackingNumber` field by the static helper `ReturnDetailsService.setFedexTrackingNumber()`. `labelURL` is NOT copied to `Item` — there is no `Item.labelURL` field at all.
+8. Outbound notifications about the return/shipment go to the Stratus Event Manager (EMS), not directly to "S4" as an HTTP client from SRS's perspective — `MessagingService.getEventAttributes()` builds an `EventAttributes` DTO containing `trackingNumber`, `shippingVendor` (=`shipmentProvider`), and `trackingUrl`. `EventAttributes` has NO `labelURL` field. This event is what ultimately reaches downstream consumers (S4/SAP is one of the consumers per the diagrams in this doc, eClaims, and other listeners (see `docs/Delinquent-Writeoff_Sequence-Diagram.puml`).
+9. Inbound S4 status callbacks (`ReturnStatusS4`, XML->object bound at `POST /v1/return-details/status`) carry `shippingInfo[].trackingNumber` and `shippingInfo[].shippingVendor` but no label field at all — S4 sends tracking status back to SRS; it does not exchange label content with SRS in either direction.
+10. **CORRECTION (added after re-verification, Aug 14 2026):** `labelURL` is NOT fully "dead" as originally stated below — `ReturnDetailsController.getReturnDetailsOrderNumber()` (`GET v1/internal/return-details/{returnOrderId}`, `ReturnDetailsController.java:95-111`) returns the **raw `ReturnDetailsDocument`** (`ResponseEntity<ReturnDetailsDocument>`) as its JSON response body. Since `rma` is a field on that document, `labelURL` (nested at `rma.shipments[0].label.labelURL`) IS serialized out to any caller of this endpoint (protected only by `AuthScopes.READ`). This is a real, existing exposure path — any internal API consumer (a portal, admin tool, or another microservice with a READ-scoped token) that calls this endpoint today receives `labelURL` in the response, even though nothing inside SRS itself reads it further. By contrast, the two other read endpoints that return `List<ReturnResponse>` (`v1/return-details/tenants/{tenantId}`, `v1/internal/return-details/subscriptions/{subscriptionId}`) use the `ReturnResponse` DTO (`api/dto/ReturnResponse.java`), which has NO `rma`/`labelURL` field — so `labelURL` only leaks out through the single-record `GET .../{returnOrderId}` endpoint, not the list endpoints.
+
+**Conclusion (CONFIRMED FROM CODE, updated): `labelURL` is received from FedEx and stored in MongoDB as a field of the persisted document. It is never read, transformed, downloaded, or forwarded to EMS/S4 by any SRS business logic — but it IS exposed verbatim to any caller of `GET v1/internal/return-details/{returnOrderId}` as part of the full document response.** Only `trackingNumber` and `trackingUrl` are actively used/propagated by SRS's own logic; `labelURL` is passively readable via that one GET endpoint. This materially changes Open Question #1 below from "cannot be answered from this repository alone" to "SRS itself provides a code path that would let an external caller retrieve it — whether anything actually calls that endpoint for this purpose still needs team confirmation."
+
+### 2. Exact Code Flow (class -> method -> file:line)
+
+| Step | Class | Method | File | Line(s) |
+|---|---|---|---|---|
+| 1 | ReturnDetailsController | sendReturn() | src/main/java/com/hp/tropos/api/ReturnDetailsController.java | ~59-71 |
+| 2 | ReturnDetailsService | sendReturn() | src/main/java/com/hp/tropos/service/ReturnDetailsService.java | 195-224 |
+| 3 | ReturnDetailsService | resolveInitReturnFlow() | src/main/java/com/hp/tropos/service/ReturnDetailsService.java | 242-249 |
+| 4 | InitReturnFedexFlow | initReturn() | src/main/java/com/hp/tropos/service/fedex/InitReturnFedexFlow.java | 33-62 |
+| 5 | FedexClient | createRma() | src/main/java/com/hp/tropos/clients/fedex/FedexClient.java | 71-125 |
+| 6 | Rma / RmaShipment / RmaShippmentLabel | data model, response deserialization target | src/main/java/com/hp/tropos/repository/model/{Rma,RmaShipment,RmaShippmentLabel}.java | full files (34, 40, 24 lines) |
+| 7 | InitReturnFedexFlow | initReturn() — tracking URL construction | src/main/java/com/hp/tropos/service/fedex/InitReturnFedexFlow.java | line 51 |
+| 8 | ReturnDetailsDocument | field rma, trackingUrl | src/main/java/com/hp/tropos/repository/model/ReturnDetailsDocument.java | 67-68 (rma), 116-117 (trackingUrl) |
+| 9 | ReturnDetailsRepository (Spring Data) | save() (via MongoRepository) | called from ReturnDetailsService.sendReturn() | line 211 |
+| 10 | ReturnDetailsService | handleProcessingStatus() | src/main/java/com/hp/tropos/service/ReturnDetailsService.java | 1392-1424 |
+| 11 | ReturnDetailsService | setFedexTrackingNumber() (static) | src/main/java/com/hp/tropos/service/ReturnDetailsService.java | 1426-1439 |
+| 12 | Item | field trackingNumber (no label field) | src/main/java/com/hp/tropos/repository/model/Item.java | line 74-75 |
+| 13 | MessagingService | getEventAttributes() | src/main/java/com/hp/tropos/service/MessagingService.java | 56-102 (label never referenced; tracking at 66-71) |
+| 14 | EventAttributes | DTO — no label field | src/main/java/com/hp/tropos/clients/stratus/eventsmanager/dto/EventAttributes.java | full file (27 lines) |
+| 15 | MessagingService | publish() -> publishToEventManager() | src/main/java/com/hp/tropos/service/MessagingService.java | 133-192 |
+| 16 | ReturnStatusS4 (inbound S4 callback model) | ShippingInfo inner class — no label field | src/main/java/com/hp/tropos/service/model/ReturnStatusS4.java | 109-118 |
+| 17 | FedexConfig | trackingUrl property holder | src/main/java/com/hp/tropos/config/properties/FedexConfig.java | line 31 |
+| 18 | application.properties | fedex.trackingUrl value | src/main/resources/application.properties | line 174 |
+| 19 | ReturnDetailsRepository | Mongo query referencing rma.shipment.label (existence check only) | src/main/java/com/hp/tropos/repository/ReturnDetailsRepository.java | 92-108 |
+
+### 3. FedEx Request/Response Mapping (exact)
+
+**Response deserialization target:** FedEx's HTTP response body is deserialized straight into `ReturnDetailsDocument.class` (see `FedexClient.createRma()` line 99: `restTemplate.postForObject(fedexConfig.getCreateRmaUrl(), entity, ReturnDetailsDocument.class)`). There is no separate "FedexResponseMapper" class — SRS reuses its own persisted-entity class as the FedEx DTO. This is architecturally significant: FedEx's shape (`rma.shipments[].label.{labelURL,trackingNumber}`) is baked directly into the internal document model.
+
+Exact JSON path (confirmed from `RmaShippmentLabel.java` `@JsonProperty` annotations and the sample payload committed to `etc/postman/Stratus Returns Service.postman_collection.json`):
+```
+rma.rmaNumber                              (String)
+rma.shipments[0].label.id                  (String)
+rma.shipments[0].label.labelURL            (String, URL) - @JsonProperty("labelURL"), RmaShippmentLabel.java:18-19
+rma.shipments[0].label.trackingNumber      (String)      - @JsonProperty("trackingNumber"), RmaShippmentLabel.java:21-22
+```
+Real example from the Postman collection (representative of what FedEx actually returns in this integration):
+```json
+"label": {
+    "id": "108988",
+    "labelURL": "https://api-sandbox.supplychain.fedex.com/api/sandbox/v1/labels/108988",
+    "trackingNumber": "794672887344"
+}
+```
+
+### 4. Current Label Persistence (CONFIRMED FROM CODE)
+
+- Model: `RmaShippmentLabel.labelURL` (String) — nested inside `RmaShipment.label` — nested inside `Rma.shipments[]` — nested inside `ReturnDetailsDocument.rma`.
+- Persistence: the entire `ReturnDetailsDocument` (a `@Document("returnDetails")` Spring Data Mongo entity, `ReturnDetailsDocument.java:34`) is saved via `returnDetailsRepository.save(body)` (`ReturnDetailsService.java:211`). Because `rma` is a field on this document, `labelURL` is persisted to MongoDB as a plain string URL, nested under `returnDetails.rma.shipments[0].label.labelURL`.
+- The field is not indexed (unlike `returnOrderId` at `ReturnDetailsDocument.java:76-78` which has `@Indexed(unique = true)`).
+- No download/decoding logic exists anywhere in `src/main`. A repository-wide search for `Base64`, `InputStream`, `byte[]`, and `MultipartFile` in `src/main/java/com/hp/tropos/**` returned zero matches. SRS never fetches the FedEx label PDF; it only stores the URL string as-is.
+- Persistence category (per Part 3 options): **A — stored directly as a URL.** SRS does NOT download and store binary/Base64 content (option B), and does not persist the label to a separate object/document store (option C).
+- The only place `label` is referenced outside the model classes is a MongoDB existence-check query in `ReturnDetailsRepository.java:100-108`, which checks `{ 'rma.shipment.label': null }` as part of a retry-eligibility filter for the undelivered-fulfillment background job — this checks for label presence, not its content, and the query key itself (`rma.shipment.label`, singular "shipment") does not even match the actual persisted field path (`rma.shipments[]`, plural array) — this looks like a pre-existing minor inconsistency/bug in that query, unrelated to DHL but worth flagging.
+
+### 5. Current S4/EMS Label Handling (CONFIRMED FROM CODE)
+
+There is no single "S4 client" that SRS calls directly for outbound events; instead:
+
+- Outbound: `MessagingService.getEventAttributes()` (`MessagingService.java:56-102`) builds `EventAttributes` with only these shipment-related fields: `trackingNumber` (line 67, sourced from `rma.shipments[0].label.trackingNumber`), `shippingVendor` (line 70, sourced from `returnData.getShipmentProvider()`), `trackingUrl` (line 71, sourced from `returnData.getTrackingUrl()`). `labelURL`/label content is never added to this DTO. This event is published to the Stratus Event Manager (EMS) via `StratusEventManagerClient` (`MessagingService.java:190-191`), which is the mechanism by which downstream systems (including, per the sequence diagrams in this repo, S4/SAP) learn about return/shipment status.
+- Inbound: `ReturnStatusS4` (`src/main/java/com/hp/tropos/service/model/ReturnStatusS4.java`) is the XML/JSON model bound from S4's status callback (`POST /v1/return-details/status`, handled by `ReturnDetailsService.handleS4ReturnStatus()`). Its `ShippingInfo` inner class (lines 109-118) has only `shippingVendor`, `trackingNumber`, `partSerialNumber`, `partLineNum` — no label field. S4 sends tracking/status info to SRS; it does not send or receive label documents.
+
+**Direct answers (Part 4):**
+1. Does S4/EMS payload contain labelURL? **NO** (confirmed — `EventAttributes.java` has no such field).
+2. Does the current contract support inline Base64 document content? **NO** — no such field exists, and no code anywhere serializes/attaches binary content to an event.
+3. Is label information sent to S4/EMS at all? **NO.**
+4. Which downstream system consumes tracking info? Per code + diagrams: Stratus Event Manager (EMS) -> downstream consumers including S4/SAP, eClaims, and other listeners (see `docs/Delinquent-Writeoff_Sequence-Diagram.puml`).
+5. Does any downstream service assume label is a URL? Cannot be confirmed from this codebase — SRS itself never forwards the label at all, so there is no code-level assumption to point to. (NEEDS TEAM CONFIRMATION with the S4/EMS/eClaims teams.)
+6. FedEx-specific assumptions? Yes — `InitReturnFedexFlow.java:51` hardcodes FedEx's tracking-URL-prefix config (`fedexConfig.getTrackingUrl()`) and assumes `rma.getShipments().get(0)` always exists with a non-null `label` (no null-check).
+7. Would sending DHL Base64 content break the current contract? Not applicable to the current contract, because the current contract never sends label content in the first place. The only real compatibility question is around `trackingNumber` and `trackingUrl`, both of which are plain strings and DHL's equivalents (`shipmentTrackingNumber` and a DHL tracking URL) are also plain strings, so those two fields are structurally compatible.
+
+### 6. DHL Label Behavior (per documentation information supplied for this analysis — NOT independently verified against DHL's live API/docs)
+
+DHL documentation information supplied for this analysis states:
+- DHL's MyDHL Shipment API response contains `shipmentTrackingNumber` (top-level) and a `documents[]` array.
+- Each entry in `documents[]` can carry the label/waybill content directly in `documents[].content`.
+- `content` "can be Base64 encoded."
+- The request can specify `outputImageProperties.encodingFormat = "pdf"` to influence the format of the returned document.
+- There is no dedicated "Create Return Shipment" endpoint — a return is just a shipment with shipper/receiver roles reversed.
+- DHL documentation information supplied for this analysis also gives a sample DHL tracking URL: `https://www.dhl.com/en/express/tracking.html?AWB=<number>` (flagged explicitly in the prompt as needing validation against the real DHL contract before production use).
+
+### 7. FedEx to DHL Response Mapping (Label-Specific)
+
+| Field | FedEx (CONFIRMED FROM CODE) | DHL (per supplied documentation) | Mapping Impact |
+|---|---|---|---|
+| Tracking number | rma.shipments[0].label.trackingNumber -> RmaShippmentLabel.trackingNumber | shipmentTrackingNumber (top-level) | Straightforward value mapping; DHL is NOT nested the same way — requires new extraction logic, not a drop-in replacement of RmaShippmentLabel. |
+| Label/document | rma.shipments[0].label.labelURL (a live URL string) -> RmaShippmentLabel.labelURL | documents[typeCode="label"].content (Base64-encoded string, inline in the response body) | Fundamentally different delivery model: URL-by-reference vs. content-by-value. This is the single biggest architectural gap. |
+| Tracking URL | Constructed by SRS: fedexConfig.getTrackingUrl() + trackingNumber (InitReturnFedexFlow.java:51), using fedex.trackingUrl property (application.properties:174) | Not returned by DHL's shipment response per the supplied documentation; a sample public tracking URL format was supplied (https://www.dhl.com/en/express/tracking.html?AWB=<number>) but this is documentation/sample info only, needs validation | Same SRS-side construction pattern (config-prefix + tracking number) can likely be reused for DHL, but the actual URL template must be confirmed with DHL/team before production. |
+| Output format control | Not present in FedEx flow (FedEx's format is whatever labelURL resolves to; SRS never inspects it) | Request has outputImageProperties.encodingFormat = "pdf" — DHL requires the requester to ask for a format | New request-building responsibility that has no FedEx analogue in the current code. |
+
+### 8. Label Format Comparison
+
+- FedEx (CONFIRMED FROM CODE): SRS has zero opinion or logic about label format. `labelURL` is stored and never opened, inspected, downloaded, or converted anywhere in `src/main`. There is no MIME-type handling, no `.pdf` filename check, no ZPL/PNG-specific logic, and no printer-integration code found in this repository. SRS today is a pure pass-through of a URL string it never dereferences.
+- DHL (per supplied documentation): `outputImageProperties.encodingFormat = "pdf"` implies DHL can be explicitly asked to return PDF; content arrives as Base64 inline data rather than a fetchable link.
+- Direct answers (Part 7):
+  1. Is PDF already "supported" by SRS? Trivially yes in the sense that SRS never touches the byte content either way — there is no code path that would reject or mishandle a PDF; but there is also no code path that consumes it.
+  2. Is conversion required? Not for SRS's own logic (it doesn't process the bytes today) — but if downstream/EMS/S4 or any UI expects a clickable URL, then yes, some conversion/storage step would be needed to turn DHL's Base64 payload into a URL, if URL-based consumption is required downstream.
+  3. Does downstream S4/EMS support PDF? Cannot be confirmed from code — the current EMS EventAttributes DTO has no field for label content or PDF at all. NEEDS TEAM CONFIRMATION.
+  4. Does any warehouse/printing system require ZPL? No evidence found in this repository either way. NEEDS TEAM CONFIRMATION.
+  5. Is the current FedEx label consumed by a browser or printer? Cannot be determined from this codebase — SRS never opens the URL, so any browser/printer consumption must happen entirely outside SRS. NEEDS TEAM CONFIRMATION on who actually consumes rma.shipments[0].label.labelURL from the database.
+  6. Is there code that assumes a URL ending in .pdf? No — no filename/extension-based logic was found anywhere in src/main.
+  7. Is there code that downloads the URL before processing? No — confirmed no HTTP GET, no InputStream, no file I/O tied to labelURL anywhere in src/main.
+
+### 9. Base64 vs URL Analysis
+
+- FedEx model = pull (SRS/consumer fetches bytes later via labelURL, at their leisure, subject to FedEx's URL validity/auth/expiry — none of which SRS has any code to manage today).
+- DHL model (per supplied documentation) = push (bytes are embedded directly in the synchronous API response as Base64 in documents[].content).
+- SRS's current persistence model (a MongoDB document with a labelURL string field) can trivially store a Base64 string too — MongoDB has no schema constraint here, so there is no database-schema blocker to storing DHL's Base64 content as-is if the team decides to keep it inline. However, storing large Base64 PDF blobs directly inside the main returnDetails document (which is read/written frequently across the whole return lifecycle) is a design concern (document bloat, read/write performance, MongoDB 16MB document size limit) — this is an architectural judgment call, not a hard code blocker.
+- No existing SRS code reads, decodes, or re-encodes Base64 for labels. Any Base64 handling for DHL would be entirely new code (not a modification of existing decode logic, since none exists).
+
+### 10. Tracking Number Mapping
+
+- FedEx: rma.shipments[0].label.trackingNumber -> copied in two places:
+  - InitReturnFedexFlow.java:51 (embedded implicitly as part of payload.setRma(...) a few lines earlier, and explicitly used to build trackingUrl)
+  - ReturnDetailsService.setFedexTrackingNumber() (ReturnDetailsService.java:1426-1439) — copies rmaShipment.getLabel().getTrackingNumber() onto each matching Item.trackingNumber (by SKU match).
+- DHL (per supplied documentation): shipmentTrackingNumber is a top-level field on the shipment response, not nested under a label object.
+- Can the same internal model store both? The final storage target (Item.trackingNumber, a plain String field — Item.java:74-75) is carrier-agnostic and can store a DHL tracking number with no schema change. However, the intermediate extraction path (fedexResponse.getRma().getShipments().get(0).getLabel().getTrackingNumber()) is FedEx-response-shape-specific and hardcoded to the Rma/RmaShipment/RmaShippmentLabel class hierarchy. DHL's flat shipmentTrackingNumber cannot be read through this same object graph without new extraction code (this is a code change, not a data-model blocker).
+- Are tracking number and label always generated together? In the FedEx model, yes structurally — both live under the same label object in the same response, generated in the same API call. Per DHL's supplied documentation, they are not necessarily co-located: shipmentTrackingNumber is top-level while the label lives inside documents[] — still produced by the same shipment-creation call, but structurally decoupled in the response shape.
+
+### 11. Tracking URL Analysis
+
+- CONFIRMED FROM CODE: The FedEx tracking URL is constructed by SRS, not returned by FedEx. Evidence:
+  - FedexConfig.java:31 — private String trackingUrl; (a Spring @ConfigurationProperties(prefix = "fedex") field)
+  - application.properties:174 — fedex.trackingUrl=https://www.fedex.com/fedextrack/?tracknumbers=
+  - InitReturnFedexFlow.java:51 — payload.setTrackingUrl(fedexClient.getFedexConfig().getTrackingUrl() + payload.getRma().getShipments().get(0).getLabel().getTrackingNumber()); — simple string concatenation of the configured prefix + the FedEx tracking number.
+- It is not hardcoded in Java (it's externalized to application.properties), not generated by S4, and not generated by a separate utility class — it's inline string concatenation inside InitReturnFedexFlow.
+- For DHL: the exact same pattern (a configured URL-prefix property + tracking number concatenation) could structurally be reused for a new InitReturnDhlFlow equivalent, using a new dhl.trackingUrl (or similar) property. The DHL URL format supplied in this prompt (https://www.dhl.com/en/express/tracking.html?AWB=<number>) is documentation/sample information only and must be validated against DHL's actual contract before being hardcoded into a config value.
+
+### 12. S4/EMS Compatibility Summary
+
+| Question | Answer | Basis |
+|---|---|---|
+| Does current contract carry labelURL/label content today? | No | EventAttributes.java has no such field (CONFIRMED FROM CODE) |
+| Would adding DHL's Base64 label break the existing contract? | No, because there is nothing to break — no field exists for it today, so DHL doesn't corrupt anything existing; it's a net-new capability, not a modification | CONFIRMED FROM CODE |
+| Does current contract carry trackingNumber/trackingUrl/shippingVendor? | Yes (EventAttributes.trackingNumber, .trackingUrl, .shippingVendor) | CONFIRMED FROM CODE |
+| Can DHL's shipmentTrackingNumber flow through the same EventAttributes fields? | Yes, structurally — both are plain strings | CONFIRMED FROM CODE (field types), extraction logic still needs to change (Section 10) |
+| Does downstream (S4/eClaims/etc.) need the label at all today? | Unknown from this codebase — since SRS never forwards it, the question of downstream necessity cannot be answered from code alone | NEEDS TEAM CONFIRMATION |
+
+### 13. Gap Analysis Table
+
+| Area | Existing FedEx | DHL (per supplied docs) | Code Location | Gap | Recommended Approach |
+|---|---|---|---|---|---|
+| Tracking number | rma.shipments[0].label.trackingNumber | shipmentTrackingNumber (top-level) | RmaShippmentLabel.java:21-22; ReturnDetailsService.java:1426-1439 | New extraction path required (different nesting) | Add DHL-specific extraction logic that writes into the same Item.trackingNumber / EventAttributes.trackingNumber targets |
+| Label URL | labelURL (live fetchable URL) | Not provided as URL by DHL (per supplied docs) | RmaShippmentLabel.java:18-19 | DHL has no direct equivalent field | Do not attempt to map 1:1; treat as a different concept (see "Label document" row) |
+| Label document | N/A — SRS never processes label bytes | documents[] array, possibly multiple documents/types | New concept | Entire capability doesn't exist in SRS today | New model/DTO needed only if SRS decides to actively handle DHL documents (not required by current contract) |
+| Label content | N/A | documents[].content | N/A | No existing field to store this in Rma/RmaShippmentLabel | If needed, add a new field (e.g., to a DHL-specific model), NOT to RmaShippmentLabel (which is FedEx-shaped) |
+| Base64 | Never used | Content "can be Base64 encoded" per supplied docs | N/A (no Base64 code found in src/main) | No decode/encode utility exists in SRS | New code required if Base64 must be processed (decode, store, or re-expose) |
+| PDF | Never inspected by SRS | outputImageProperties.encodingFormat="pdf" (requestable) | N/A | No format-negotiation logic exists today | If format matters downstream, add explicit format request/validation for DHL calls |
+| ZPL | No evidence of use anywhere in repo | Not mentioned in supplied DHL info | N/A | Unknown requirement | NEEDS TEAM CONFIRMATION (warehouse/printer requirements) |
+| Document type | FedEx: implicitly PDF (SRS agnostic) | DHL: explicit typeCode per document (e.g. "label") per supplied docs | N/A | SRS has no typeCode concept today | If multiple DHL document types are returned, add a typeCode filter when selecting which document is "the label" |
+| Label storage | Stored as URL string, nested in rma.shipments[0].label.labelURL | Not defined by current SRS model | ReturnDetailsDocument.java:67-68 (rma field) | RmaShippmentLabel is FedEx-specific class | Do not force DHL data into RmaShippmentLabel; needs its own model if persisted |
+| Label persistence | Full label object persisted as part of ReturnDetailsDocument in MongoDB | N/A today | ReturnDetailsRepository.save(), ReturnDetailsService.java:211 | No schema blocker (MongoDB is schemaless per-field), but document-size/perf is a consideration for large Base64 blobs | Prefer NOT persisting large Base64 content inline in the main document; if persistence is required, evaluate a separate collection/object store |
+| S4/EMS payload | EventAttributes: trackingNumber, shippingVendor, trackingUrl only | Same fields structurally compatible; no label field exists in contract today | EventAttributes.java; MessagingService.java:56-102 | No gap for tracking fields; label was never in scope of this contract | No contract change needed unless business requires label delivery to downstream — TEAM DECISION |
+| Downstream consumer | EMS -> (per diagrams) S4/SAP, eClaims, etc. | Same downstream topology assumed (not FedEx/DHL-specific) | MessagingService.publish() | Consumer identity/expectations for label are unknown | NEEDS TEAM CONFIRMATION with S4/EMS/eClaims owners |
+| Tracking URL | SRS-constructed: config prefix + tracking number (InitReturnFedexFlow.java:51) | Documentation/sample URL given, not confirmed | FedexConfig.java:31, application.properties:174 | Need a validated DHL tracking URL template | Reuse the same config-prefix + concatenation pattern once DHL URL format is confirmed by DHL/team |
+| Carrier | shipmentProvider field, driven by LaunchDarkly flag (getShipmentProviderFlag()) | Would be a new flag value (e.g. "DHL") | ReturnDetailsService.java:195; InitReturnFedexFlow.java:66 (getFlowType() returns "Fedex") | Need a new InitReturnFlow implementation with getFlowType() returning e.g. "DHL" | Follow the existing InitReturnFlow strategy-pattern precedent (analysis only — do not implement per task scope) |
+| RMA | rmaNumber root-level field in FedEx payload; retReturnNumber internal field | customerReferences[typeCode="RMA"].value per earlier section of this document | FedexClient.java:152; ReturnDetailsDocument.java:119-120 | Different payload placement only; value itself is reusable | Carry retReturnNumber into DHL's customerReferences array with typeCode="RMA" |
+| Error handling | FedexUnauthorizedException, FedexPreconditionFailedException, FedexClientException, RmaNumberLengthException — all FedEx-specific | Not defined by supplied DHL docs | src/main/java/com/hp/tropos/clients/fedex/*.java | No DHL-specific exception types exist | NEEDS TEAM CONFIRMATION on DHL error contract; new exception types would likely be needed, but this is implementation, out of scope for this analysis |
+
+### 14. Recommended Integration Approach (Analysis Only — Not Implemented)
+
+Evaluating the three options from the task prompt against the actual codebase evidence above:
+
+- Option A (SRS stores Base64/binary, existing SRS consumers read the document): Does not fit — there are no existing SRS consumers of labelURL content to begin with (Section 4/8 confirmed zero download/decode code). There is nothing for a Base64 field to be "read by" inside SRS today.
+- Option B (SRS decodes/stores PDF, generates an accessible URL, existing S4/downstream contract continues to use URL): This assumes downstream currently consumes a label URL from S4/EMS — but Section 5/12 confirmed the current EMS/S4 contract (EventAttributes) has no label field at all, so there is no existing "URL contract" to preserve for the label specifically (only trackingUrl exists, which is a different concept — the shipment tracking page, not the label document). If some other, out-of-repository consumer reads labelURL directly from MongoDB (unconfirmed — see open question), Option B would be the only way to keep that consumer working unmodified.
+- Option C (SRS sends Base64 directly downstream): Would require adding a new field to EventAttributes and possibly to whatever schema S4/EMS itself expects — a downstream contract change, not just an SRS-side change.
+
+Given the actual codebase (labelURL is stored-but-unused, and never forwarded downstream today): the lowest-risk, most contract-compatible starting point is to treat trackingNumber and trackingUrl as the only fields that must reliably map from DHL -> SRS -> EMS (since these are the only fields with real, active consumers in the code). The labelURL/label-document question is not actually a live production dependency in the current codebase — before deciding between Option A/B/C, the team must first confirm (see Open Questions) whether any system outside this repository reads rma.shipments[0].label.labelURL directly from the returnDetails MongoDB collection. If no such consumer exists, the safest approach is to not persist DHL's Base64 label inline in the main returnDetails document at all, and instead treat label handling as a separate, to-be-designed capability — decoupled from the tracking-number/tracking-URL migration, which is comparatively low-risk and can be reused with only new extraction-mapping code (Section 10/11).
+
+### 15. Open Questions for Team
+
+1. Does any system outside SRS (a portal, UI, warehouse tool, or another microservice) actually call `GET v1/internal/return-details/{returnOrderId}` and read/use `rma.shipments[0].label.labelURL` from that response, or query the returnDetails MongoDB collection directly? SRS itself is now CONFIRMED to expose this field via that endpoint (see Section 1, item 10, and Section 17 below); what's still unconfirmed is whether any real consumer relies on it.
+2. Does S4 or EMS (or any listener behind EMS) require the actual label document/PDF at all, or only tracking number + tracking URL (which is all the current contract carries)?
+3. If the label is required downstream, should DHL's Base64 content be (a) decoded and stored as a URL-accessible object (Option B), (b) passed through as Base64 (Option C), or (c) not persisted by SRS at all and left to a separate label-service?
+4. Is DHL's sample tracking URL (https://www.dhl.com/en/express/tracking.html?AWB=<number>) the correct, stable, production customer-facing tracking URL? (Explicitly flagged in the supplied documentation as needing validation.)
+5. Can documents[] contain more than one document (e.g., commercial invoice + label)? If so, what typeCode reliably identifies "the label" vs. other documents? (Not answerable from the supplied documentation snippet alone.)
+6. Does the DHL shipment-creation call always return a label in the same synchronous response, or can label generation be asynchronous/delayed? (Not stated in supplied documentation.)
+7. Are there MongoDB document-size concerns if large Base64 PDFs were stored inline in returnDetails (16MB BSON document limit)? Does the team have an existing object-storage pattern already used elsewhere in this codebase (e.g., see reconextReportsBucketName/reconextReportsFolder in FedexConfig.java:35-37) that could be reused for DHL labels?
+8. Should a new ReturnDetailsDocument/EMS contract field be added for label content/URL, and if so, who owns approval of that downstream schema change (S4 team, EMS team, or both)?
+9. Is ReturnDetailsRepository.java:100-101's query key 'rma.shipment.label' (singular "shipment") versus the actual persisted field path rma.shipments[] (plural array) an existing bug, or intentional? (Flagged as an aside finding, not DHL-related, but relevant to any future label-based Mongo query design for DHL.)
+
+### 16a. Verification Pass (Added Aug 14, 2026) — Three Specific Checks Re-Confirmed Against Code
+
+This sub-section documents a targeted re-verification of three specific claims made above, done by re-inspecting the actual source files (not re-deriving from scratch).
+
+**Check 1 — Where does the FedEx `labelURL` actually go after SRS receives it?**
+- Confirmed path: FedEx response → `ReturnDetailsDocument.rma.shipments[0].label.labelURL` → persisted to MongoDB via `returnDetailsRepository.save(body)` → **also returned verbatim in the JSON body of `GET v1/internal/return-details/{returnOrderId}`** (`ReturnDetailsController.java:95-111`, `ResponseEntity<ReturnDetailsDocument>`), because that endpoint returns the entire persisted document, not a filtered DTO.
+- Checked and ruled out as exposure paths: `GET v1/return-details/tenants/{tenantId}` and `GET v1/internal/return-details/subscriptions/{subscriptionId}` both return `List<ReturnResponse>` (`api/dto/ReturnResponse.java`), and `ReturnResponse` has no `rma`/`labelURL` field (only `trackingNumber`, `trackingUrl`, `shippingVendor`, etc.) — confirmed by reading the full 93-line DTO. So `labelURL` does NOT leak through the tenant/subscription list endpoints, only through the single-record internal GET-by-returnOrderId endpoint.
+- No other reader of `rma`/`label` was found beyond the one Mongo existence-check query already noted in Section 4 (`ReturnDetailsRepository.java:100-108`, presence-only, not content).
+- **Revised answer:** `labelURL` is not fully inert — it is persisted, and then re-exposed as-is (still just a URL string) to any caller of that one internal GET endpoint. There is no evidence in this repo of what (if anything) calls that endpoint specifically to read the label, so "is it actually used by a consumer" remains a team question — but "is there a code path that could expose it" is now answered YES, not "no such path exists."
+
+**Check 2 — Does S4 expect a URL, or can it accept document content?**
+- Re-searched the whole repo for any S4-side API contract (OpenAPI/Swagger/WSDL/JSON-schema) that isn't just SRS's own outbound DTO. None exists in this repository — the only two S4-facing contracts in-repo are (a) SRS's own outbound `EventAttributes` DTO (no label field, string-typed `trackingNumber`/`trackingUrl`) and (b) SRS's own inbound `ReturnStatusS4`/`ShippingInfo` model for S4's status callback (also no label field, string-typed fields only).
+- Also checked a structurally similar, unrelated flow for corroboration: the Gekko→Solace `REPLACEMENT_SHIPMENT_TRACK_N_TRACE` event (`src/test/resources/SolaceSampleEvent/ReplacementShipmentTrackNTraceEvent.json`, consumed — not sent to S4 — by `GekkoTransformServiceUnitTest`/Jolt specs) carries `carrierTrackingURL` as a plain string, reinforcing that everywhere in this codebase carrier tracking links are modeled as URL strings, never as binary/Base64 content. This is circumstantial (a different, inbound, replacement-flow pipeline), not direct proof of what S4 itself can accept for a *label document* — it does not resolve the open question.
+- **Answer unchanged, still NEEDS TEAM CONFIRMATION with the S4 team:** nothing in this repository defines what S4's own receiving system supports for label delivery (URL vs. inline document). SRS's own contract simply never sends label data either way, so there's no in-repo evidence either confirming or ruling out S4 accepting inline document content.
+
+**Check 3 — Can the existing SRS model store DHL's Base64 PDF?**
+- Re-checked `RmaShippmentLabel.java` (the class holding `labelURL`) for any length/format constraints: no `@Size`, `@Pattern`, `@Length`, or `maxLength` annotations found anywhere in that class or elsewhere in `repository/model` for this field (confirmed via repo-wide search — zero matches).
+- `labelURL` is a plain `String` with only a `@JsonProperty("labelURL")` annotation — no validation constrains its content or length.
+- MongoDB itself imposes no per-field schema/length constraint (schemaless per-field); the only real limit is the **16MB BSON document size cap** on the whole `returnDetails` document, which matters because `rma` lives inside that same document, not a separate collection.
+- **Answer unchanged and reconfirmed:** Yes, the current model can technically store a Base64 string in `labelURL` (or a new sibling field) with zero code-level or database-schema changes required. The only real concern is architectural (document bloat / read-write performance / proximity to the 16MB limit for a frequently-read-and-written document), not a hard blocker.
+
+### 16. Exact Code References (Consolidated)
+
+- File: src/main/java/com/hp/tropos/repository/model/RmaShippmentLabel.java — Full class. Fields: id, labelURL (@JsonProperty("labelURL"), line 18-19), trackingNumber (line 21-22).
+- File: src/main/java/com/hp/tropos/repository/model/RmaShipment.java — Field label of type RmaShippmentLabel (line 35-36).
+- File: src/main/java/com/hp/tropos/repository/model/Rma.java — Field shipments (ArrayList<RmaShipment>, line 31-32).
+- File: src/main/java/com/hp/tropos/repository/model/ReturnDetailsDocument.java — Field rma (line 67-68, type Rma); field trackingUrl (line 116-117, type String).
+- File: src/main/java/com/hp/tropos/clients/fedex/FedexClient.java — Method createRma(ReturnDetailsDocument, AttributionFlag) (line 71-125): deserializes FedEx response into ReturnDetailsDocument (line 99). Method createRmaS4(...) (line 128-192). Method fedexCall(FedexPayload) (line 194-236). Method createAttributionRes(...) (line 289-314) — builds a synthetic Rma/RmaShipment/RmaShippmentLabel for test/prod-testing mode, setting only trackingNumber (line 307), never labelURL.
+- File: src/main/java/com/hp/tropos/service/fedex/InitReturnFedexFlow.java — Method initReturn(ReturnDetailsDocument) (line 33-62). Line 47: payload.setRma(returnDetailsDocument.getRma()) (this is the only place labelURL gets copied — implicitly, as part of the whole rma object). Line 51: tracking URL construction reading .getLabel().getTrackingNumber() (NOT .getLabelURL()).
+- File: src/main/java/com/hp/tropos/service/ReturnDetailsService.java — Method sendReturn() (line ~146-224). Method resolveInitReturnFlow() (line 242-249). Method handleProcessingStatus() (line 1392-1424). Static method setFedexTrackingNumber(ReturnDetailsDocument, ReturnDetailsDocument) (line 1426-1439) — reads rmaShipment.getLabel().getTrackingNumber() (line 1433), never reads labelURL.
+- File: src/main/java/com/hp/tropos/repository/model/Item.java — Field trackingNumber (line 74-75). No labelURL field exists on Item.
+- File: src/main/java/com/hp/tropos/service/MessagingService.java — Method getEventAttributes(ReturnDetailsDocument) (line 56-102). Line 66-68: reads returnData.getRma().getShipments().get(0).getLabel().getTrackingNumber() into attributes.setTrackingNumber(...). Line 70: attributes.setShippingVendor(returnData.getShipmentProvider()). Line 71: attributes.setTrackingUrl(returnData.getTrackingUrl()). labelURL is never referenced in this method.
+- File: src/main/java/com/hp/tropos/clients/stratus/eventsmanager/dto/EventAttributes.java — Full class (27 lines). Fields: subscriptionId, fulfillmentOrderId, returnOrderId, status, trackingNumber, shippingVendor, trackingUrl, invoiceNumber, invoiceCurrency, invoiceTotal, parts. No label-related field.
+- File: src/main/java/com/hp/tropos/service/model/ReturnStatusS4.java — Inner class ShippingInfo (line 109-118): fields shippingVendor, trackingNumber, partSerialNumber, partLineNum. No label-related field.
+- File: src/main/java/com/hp/tropos/config/properties/FedexConfig.java — Field trackingUrl (line 31), createRmaUrl (line 33).
+- File: src/main/resources/application.properties — Line 174: fedex.trackingUrl=https://www.fedex.com/fedextrack/?tracknumbers=.
+- File: src/main/java/com/hp/tropos/repository/ReturnDetailsRepository.java — Method findAllDocumentsByUndeliveredNull(Date, Pageable) (line 92-108): Mongo @Query referencing 'rma.shipment.label': null (line 101) as part of a retry-eligibility filter.
+- File: etc/postman/Stratus Returns Service.postman_collection.json — Contains a full real-shape example FedEx response payload showing label.id, label.labelURL, label.trackingNumber together.
 
 ---
 
-## Document Change Log
+## FINAL OUTPUT — Label-Specific Analysis Summary
 
-| Date | Author | Changes |
-|------|--------|---------|
-| Aug 13, 2026 | Anjali Taluri | Initial comprehensive analysis |
+### A. Executive Summary
 
----
+SRS's current FedEx integration receives a label as a URL (rma.shipments[0].label.labelURL) nested inside the same response object it uses as its internal persisted document (ReturnDetailsDocument). This URL is saved to MongoDB as part of the whole document but is never read, downloaded, or forwarded by any other code in the repository — only the sibling field trackingNumber (and the SRS-constructed trackingUrl) are actively propagated to Item.trackingNumber and to the downstream Event Manager (EventAttributes). DHL, per the documentation information supplied for this analysis, does not return a label URL at all — it returns shipmentTrackingNumber (top-level) plus a documents[] array whose content is (potentially Base64-encoded) inline document data, with format requested via outputImageProperties.encodingFormat. This is a fundamentally different delivery model (push/inline vs. pull/URL) for the label specifically, while the tracking-number and tracking-URL concepts are structurally compatible and low-risk to migrate.
 
-**End of Document**
+### B. Existing FedEx Code Flow
 
+ReturnDetailsController.sendReturn() -> ReturnDetailsService.sendReturn() (ReturnDetailsService.java:195-224) -> resolveInitReturnFlow() (line 242-249) -> InitReturnFedexFlow.initReturn() (InitReturnFedexFlow.java:33-62) -> FedexClient.createRma() (FedexClient.java:71-125), response deserialized directly into ReturnDetailsDocument -> label lands in ReturnDetailsDocument.rma.shipments[0].label (RmaShippmentLabel, fields labelURL + trackingNumber) -> InitReturnFedexFlow.java:51 builds trackingUrl from trackingNumber only -> returnDetailsRepository.save(body) (ReturnDetailsService.java:211) persists the whole document including labelURL -> later, ReturnDetailsService.setFedexTrackingNumber() (line 1426-1439) copies trackingNumber (not labelURL) onto Item.trackingNumber -> MessagingService.getEventAttributes() (line 56-102) copies trackingNumber, shippingVendor, trackingUrl (not labelURL) into EventAttributes -> published to EMS (MessagingService.publish(), line 133-192) -> downstream consumers (S4/SAP, eClaims, etc., per repo diagrams).
+
+### C. DHL Label Model (per supplied documentation only)
+
+Shipment creation response -> shipmentTrackingNumber (top-level string) + documents[] (array of document objects) -> each document may have content (possibly Base64) and a typeCode. Format of content can be influenced via request field outputImageProperties.encodingFormat (e.g., "pdf").
+
+### D. FedEx vs DHL Label Mapping
+
+See the consolidated table in "13. Gap Analysis Table" above — key rows: Tracking number (straightforward remap, different nesting), Label URL vs Label document/content (no direct equivalent — different delivery model), Tracking URL (SRS-constructed pattern reusable, but DHL URL template unconfirmed).
+
+### E. S4/EMS Impact
+
+The current S4/EMS contract (EventAttributes.java) does not carry label information today (confirmed — only trackingNumber, shippingVendor, trackingUrl). Therefore DHL's Base64 label cannot break an existing contract that doesn't include it, but delivering DHL's label to S4/EMS would require a new field and a downstream schema change, which is outside SRS's unilateral control. The tracking-number/tracking-URL fields are structurally compatible with DHL's flat response shape, pending new extraction-mapping code.
+
+### F. Code Changes Potentially Required (NOT implemented — identification only)
+
+- A DHL-specific response/label extraction path (distinct from the FedEx-shaped Rma/RmaShipment/RmaShippmentLabel classes), since DHL's shipmentTrackingNumber is top-level and documents[] has a different shape entirely.
+- A decision-driven addition to EventAttributes (and the corresponding S4/EMS downstream schema) only if the team confirms label content/URL must be forwarded downstream (Open Question #2).
+- A DHL tracking-URL configuration value (parallel to fedex.trackingUrl), once the real DHL tracking URL template is confirmed (Open Question #4).
+- Possibly a new persistence strategy (e.g., object storage) if large Base64 label content should not live inline in the main returnDetails MongoDB document (Open Question #7).
+- A new InitReturnFlow implementation (e.g. InitReturnDhlFlow) following the existing strategy-pattern precedent, for orchestration — but this is broader than label handling alone and is noted here only for completeness.
+
+### G. Open Questions for Team
+
+See full numbered list in Section 15 above. Most critical for label planning specifically: (1) whether any external consumer reads labelURL directly from MongoDB today, (2) whether S4/EMS actually needs the label content at all, and (5) how to reliably identify "the label" among potentially multiple documents[] entries from DHL.
+
+### H. Final Recommendation
+
+Based strictly on the actual codebase: do not assume label-URL parity is required. Because labelURL is confirmed to be inert (stored but unused/unforwarded) in the current system, the team should first validate Open Question #1 (any hidden external consumer of labelURL from MongoDB) before committing to Option A, B, or C. If no external consumer exists, the lowest-risk path is to (i) migrate tracking-number and tracking-URL mapping first (low risk, high code-reuse, per Sections 10-11), and (ii) treat DHL label/document handling as a separate, explicitly-scoped follow-up decision — not something to force into the existing FedEx-shaped RmaShippmentLabel model, and not something to persist inline in the main returnDetails document without a size/performance review, given DHL's content is (per supplied documentation) inline Base64 rather than a lightweight URL reference like FedEx's.
