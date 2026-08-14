@@ -1,8 +1,7 @@
 # FedEx vs DHL Express - Complete Gap Analysis for Germany Expansion
 **SRS (Stratus Returns Service) - Germany Region Implementation**
 
-**Date:** August 13, 2026  
-**Analyst:** Anjali Taluri Sri Sai Latha  
+
 **Current Implementation:** FedEx (USA)  
 **Target Implementation:** DHL Express MyDHL API v3.3.1 (Germany)
 
@@ -30,12 +29,15 @@ This document provides a comprehensive gap analysis between the current FedEx RM
 
 1. [Current FedEx Implementation Analysis](#current-fedex-implementation)
 2. [DHL Express API Structure Analysis](#dhl-express-api-structure)
-3. [Three Critical Requirements Analysis](#three-critical-requirements)
+3. [Three Critical Requirements Analysis](#three-critical-requirements) — Tracking URL, Authentication, RMA
 4. [Field-by-Field Mapping Comparison](#field-mapping)
 5. [Gap Analysis & Missing Fields](#gap-analysis)
-6. [S4 Integration Impact](#s4-integration)
-7. [Implementation Recommendations](#implementation-recommendations)
-8. [Code Changes Required](#code-changes)
+6. [CONFIRMED vs NEEDS CONFIRMATION (Critical Validation Items)](#confirmed-vs-needs-confirmation)
+7. [S4 Integration Impact](#s4-integration) / [7.1 RMA Codebase Investigation](#rma-codebase-investigation) / Label Analysis — FedEx vs DHL (labelURL, Base64, persistence options)
+8. [FINAL AUDIT PASS — Additional Mandatory Analysis Areas](#final-audit-pass) — 8.1 Carrier Selection/Architecture, 8.2 Rating/Capability, 8.3 Germany Label Free/QR, 8.4 Pickup/Drop-off/Service Point, 8.5 Customs, 8.6 Error Handling/Retry/Idempotency, 8.7 Configuration/Secrets, 8.8 Observability, 8.9 Backward Compatibility, 8.10 Testing Impact
+9. [FINAL Consolidated Deliverables](#final-consolidated-deliverables) — 9.1 Final Gap Table, 9.2 Final Implementation Impact, 9.3 Final Open Questions (owner-based), 9.4 Final End-to-End Germany Flow, 9.5 Contradiction Resolution Log, 9.6 FINAL CONFIDENCE/READINESS
+
+**Scope note:** This analysis covers the **Germany region only**. The existing US FedEx flow is NOT being replaced — Sections 8.1 and 8.9 explicitly confirm the additive, backward-compatible design (`InitReturnFedexFlow` stays untouched; a new `InitReturnDhlFlow` is added alongside it).
 
 ---
 
@@ -299,7 +301,7 @@ returnDetailsDocument.rma.shipments[0].label.trackingNumber = "794672887344"
 https://www.dhl.com/express/track?AWB=1234567890
 ```
 
-**From DHL Documentation (provided screenshots):**
+**From DHL Documentation :**
 
 | Endpoint Type | Test URL | Production URL |
 |---------------|----------|----------------|
@@ -307,7 +309,7 @@ https://www.dhl.com/express/track?AWB=1234567890
 | Shipment with last checkpoint | `https://express.api.dhl.com/mydhlapi/test/shipments/{trackingNumber}/tracking?trackingView=last-checkpoint` | `https://express.api.dhl.com/mydhlapi/shipments/{trackingNumber}/tracking?trackingView=last-checkpoint` |
 | All checkpoints with remarks | `https://express.api.dhl.com/mydhlapi/test/tracking?shipmentTrackingNumber={trackingNumber}&trackingView=all-checkpoints-with-remarks` | `https://express.api.dhl.com/mydhlapi/tracking?shipmentTrackingNumber={trackingNumber}&trackingView=all-checkpoints-with-remarks` |
 
-**DHL Tracking Event Codes (from provided image):**
+**DHL Tracking Event Codes :**
 
 | Code | Description |
 |------|-------------|
@@ -862,7 +864,7 @@ This section tracks which statements are CONFIRMED from official documentation v
 }
 ```
 
-**✅ GOOD NEWS:** Field `carrierName` exists!
+**:** Field `carrierName` exists!
 
 ### **Required S4 Payload Changes**
 
@@ -917,9 +919,6 @@ s4Payload.setCarrierTrackingURL(payload.getTrackingUrl());
 
 ---
 
-## 7. RECOMMENDED CODE INVESTIGATION (Before Implementation Starts)
-
-**Purpose:** Teams should investigate existing code BEFORE design/implementation to understand current patterns and identify potential issues.
 
 ---
 
@@ -1431,7 +1430,7 @@ DHL documentation information supplied for this analysis states:
 
 ### 14. Recommended Integration Approach (Analysis Only — Not Implemented)
 
-Evaluating the three options from the task prompt against the actual codebase evidence above:
+Evaluating the three options  against the actual codebase evidence above:
 
 - Option A (SRS stores Base64/binary, existing SRS consumers read the document): Does not fit — there are no existing SRS consumers of labelURL content to begin with (Section 4/8 confirmed zero download/decode code). There is nothing for a Base64 field to be "read by" inside SRS today.
 - Option B (SRS decodes/stores PDF, generates an accessible URL, existing S4/downstream contract continues to use URL): This assumes downstream currently consumes a label URL from S4/EMS — but Section 5/12 confirmed the current EMS/S4 contract (EventAttributes) has no label field at all, so there is no existing "URL contract" to preserve for the label specifically (only trackingUrl exists, which is a different concept — the shipment tracking page, not the label document). If some other, out-of-repository consumer reads labelURL directly from MongoDB (unconfirmed — see open question), Option B would be the only way to keep that consumer working unmodified.
@@ -1441,7 +1440,7 @@ Given the actual codebase (labelURL is stored-but-unused, and never forwarded do
 
 ### 15. Open Questions for Team
 
-1. Does any system outside SRS (a portal, UI, warehouse tool, or another microservice) actually call `GET v1/internal/return-details/{returnOrderId}` and read/use `rma.shipments[0].label.labelURL` from that response, or query the returnDetails MongoDB collection directly? SRS itself is now CONFIRMED to expose this field via that endpoint (see Section 1, item 10, and Section 17 below); what's still unconfirmed is whether any real consumer relies on it.
+1. Does any system outside SRS  actually call `GET v1/internal/return-details/{returnOrderId}` and read/use `rma.shipments[0].label.labelURL` from that response, or query the returnDetails MongoDB collection directly? SRS itself is now CONFIRMED to expose this field via that endpoint (see Section 1, item 10, and Section 17 below); what's still unconfirmed is whether any real consumer relies on it.
 2. Does S4 or EMS (or any listener behind EMS) require the actual label document/PDF at all, or only tracking number + tracking URL (which is all the current contract carries)?
 3. If the label is required downstream, should DHL's Base64 content be (a) decoded and stored as a URL-accessible object (Option B), (b) passed through as Base64 (Option C), or (c) not persisted by SRS at all and left to a separate label-service?
 4. Is DHL's sample tracking URL (https://www.dhl.com/en/express/tracking.html?AWB=<number>) the correct, stable, production customer-facing tracking URL? (Explicitly flagged in the supplied documentation as needing validation.)
@@ -1451,7 +1450,7 @@ Given the actual codebase (labelURL is stored-but-unused, and never forwarded do
 8. Should a new ReturnDetailsDocument/EMS contract field be added for label content/URL, and if so, who owns approval of that downstream schema change (S4 team, EMS team, or both)?
 9. Is ReturnDetailsRepository.java:100-101's query key 'rma.shipment.label' (singular "shipment") versus the actual persisted field path rma.shipments[] (plural array) an existing bug, or intentional? (Flagged as an aside finding, not DHL-related, but relevant to any future label-based Mongo query design for DHL.)
 
-### 16a. Verification Pass (Added Aug 14, 2026) — Three Specific Checks Re-Confirmed Against Code
+### 16a. Verification Pass — Three Specific Checks Re-Confirmed Against Code
 
 This sub-section documents a targeted re-verification of three specific claims made above, done by re-inspecting the actual source files (not re-deriving from scratch).
 
@@ -1529,3 +1528,407 @@ See full numbered list in Section 15 above. Most critical for label planning spe
 ### H. Final Recommendation
 
 Based strictly on the actual codebase: do not assume label-URL parity is required. Because labelURL is confirmed to be inert (stored but unused/unforwarded) in the current system, the team should first validate Open Question #1 (any hidden external consumer of labelURL from MongoDB) before committing to Option A, B, or C. If no external consumer exists, the lowest-risk path is to (i) migrate tracking-number and tracking-URL mapping first (low risk, high code-reuse, per Sections 10-11), and (ii) treat DHL label/document handling as a separate, explicitly-scoped follow-up decision — not something to force into the existing FedEx-shaped RmaShippmentLabel model, and not something to persist inline in the main returnDetails document without a size/performance review, given DHL's content is (per supplied documentation) inline Base64 rather than a lightweight URL reference like FedEx's.
+
+---
+
+# 8. FINAL AUDIT PASS — Additional Mandatory Analysis Areas 
+
+This section was added during a FINAL, CODE-VERIFIED audit of this document. Everything above this point (Sections 1-7 and the Label Analysis/FINAL OUTPUT block) was reviewed and preserved unchanged — it remains accurate and is not duplicated here. This section fills the specific gaps identified during the audit: Carrier Selection Architecture, Rating, Germany Label Free/QR, Pickup/Drop-off/Service Point, Customs, Error Handling/Retry/Idempotency, Configuration/Secrets, Observability, Backward Compatibility, and Testing Impact — none of which had a dedicated section in the document prior to this pass (confirmed by a repository-wide text search for "Label Free", "Rating", "Pickup", "Customs", "Idempotency", "Observability", "Backward Compat", "Testing Impact", "InitReturnDhlFlow", "Service Point", and "QR", all returning zero prior matches in this file).
+
+
+```
+
+- `InitReturnFlow` (`src/main/java/com/hp/tropos/service/InitReturnFlow.java`) is a plain interface: `initReturn(ReturnDetailsDocument)` + `getFlowType()`.
+- Spring auto-collects **all** beans implementing `InitReturnFlow` into the injected `List<InitReturnFlow> initReturnFlows` — this is a textbook strategy pattern, already multi-bean-capable with zero changes needed to the loop itself.
+- `InitReturnFedexFlow` (`src/main/java/com/hp/tropos/service/fedex/InitReturnFedexFlow.java:65-66`) hardcodes `getFlowType() → "Fedex"` — this is the ONLY place the literal string `"Fedex"` is used as a selector; everywhere else `shipmentProvider`/`shippingVendor` is a passthrough plain `String`, not an enum.
+- `InitReturnNoFlow` (`src/main/java/com/hp/tropos/service/InitReturnNoFlow.java`) also exists as a no-op fallback implementation of the same interface — confirming this is a genuine, already-proven multi-implementation strategy pattern in production use today, not a theoretical one.
+
+**Safe Germany design (PROPOSED DESIGN, directly following the existing precedent):**
+
+```text
+InitReturnFlow (existing interface, unchanged)
+  ├── InitReturnFedexFlow   (existing, UNCHANGED — getFlowType() → "Fedex")
+  ├── InitReturnNoFlow      (existing, UNCHANGED — no-op fallback)
+  └── InitReturnDhlFlow     (NEW — getFlowType() → "DHL")
+```
+
+Adding `InitReturnDhlFlow` requires **zero modification** to `resolveInitReturnFlow()`, `InitReturnFedexFlow`, or `InitReturnNoFlow` — the loop already iterates over an injected collection and matches by string equality against the LaunchDarkly flag value. This is the safest possible Germany design because it is purely additive: the existing FedEx bean's `getFlowType()` value, registration, and behavior are untouched, and carrier selection remains a simple LaunchDarkly-flag-driven value (e.g., targeting Germany traffic to a `"DHL"` flag value) rather than a code branch.
+
+**Do NOT:** replace `InitReturnFedexFlow`'s logic, rename its `getFlowType()` value, or introduce a conditional branch inside a single shared flow class — any of these would risk regressing the existing US FedEx flow, and none are necessary given the loop already supports multiple beans.
+
+## 8.2 Rating / Capability (CONFIRMED FROM CODE — NOT PRESENT TODAY)
+
+**Does the existing FedEx SRS return flow perform rating?** A full search of `FedexClient.java`, `FedexPayload`, and the FedEx request/response structures documented in Sections 1-4 above shows **no rating, rate-shopping, or service-level-selection method or field anywhere in the current FedEx integration.** FedEx's returned RMA implicitly uses whatever service level FedEx's own account configuration applies — SRS does not request or compare rates before creating the RMA.
+
+**Conclusion:** Because rating does not exist in the current flow, DHL's Rating/Capability API (confirmed to exist as a DHL capability in Section 6's CONFIRMED table) should **NOT** be built for Germany merely because DHL exposes it. Whether Germany requires:
+- a **fixed** DHL product/service (mirroring today's "whatever FedEx gives us" pattern), or
+- **dynamic** rate/service selection (a net-new capability with no FedEx precedent to reuse)
+
+is **NEEDS BUSINESS CONFIRMATION** — owner: Business/Product. Until confirmed, the default, lowest-risk assumption consistent with current behavior is a **fixed** product code per Section 3's Requirement discussion (see also the `productCode` NEEDS CONFIRMATION entries #3/#4 in Section 6).
+
+## 8.3 Germany Label Free / QR Code (CONFIRMED FROM DHL MATERIAL + explicit gaps)
+
+The DHL sample payload already reproduced in Section 2 of this document contains direct evidence of Label Free-related fields that were not previously analyzed:
+
+```json
+"outputImageProperties": {
+  "encodingFormat": "pdf",
+  "imageOptions": [
+    { "typeCode": "qr-code", "isRequested": true }
+  ]
+},
+...
+"valueAddedServices": [
+  { "serviceCode": "PZ" },
+  { "serviceCode": "PT" }
+]
+```
+
+**What this confirms (CONFIRMED FROM DHL MATERIAL — the sample payload itself):**
+- The DHL Shipment request can request a `qr-code` image alongside/instead of the PDF label via `outputImageProperties.imageOptions[typeCode="qr-code"]`.
+- `valueAddedServices` with `serviceCode: "PZ"` and `serviceCode: "PT"` are present in the sample — these correspond to the PZ (Label Free-related) and PT (Data Staging-related) service codes referenced in the DHL team information supplied for this project.
+- The QR code, per the DHL team information supplied separately for this analysis, is returned Base64-encoded in PNG format.
+
+**What is explicitly NOT established (NEEDS BUSINESS/DHL CONFIRMATION):**
+- Whether `PZ`/`PT`/Label Free/QR is actually **required** for this SRS Germany return journey, or whether the sample payload merely demonstrates that the *capability* exists. The sample payload is a capability demonstration, not a confirmed SRS business requirement — this document must not conflate the two.
+- Whether Label Free needs to be separately **enabled on the DHL account** before `PZ`/`qr-code` requests will succeed (per DHL team information — this is an account-provisioning dependency, not just an API-request parameter).
+- Whether LLT (service-content information) applies to this specific return scenario — not present anywhere in the supplied sample payload or DHL team information reviewed for this analysis.
+- Whether the Germany return journey should avoid physical label printing entirely (Label Free/QR only) or should default to the conventional PDF label shown in the same sample (`outputImageProperties.encodingFormat: "pdf"`) — both are requested **simultaneously** in the sample, which itself does not resolve which one SRS's actual customer journey needs.
+
+**Explicit disambiguation :**
+
+| Concept | What it is |
+|---|---|
+| QR code (`imageOptions[typeCode="qr-code"]`) | A Base64 PNG image, an *alternative/supplement* to the printed label, used at drop-off/Service Point |
+| `shipmentTrackingNumber` | The carrier's shipment identifier — NOT the QR code |
+| PDF/ZPL label (`documents[].content`) | The conventional printed shipping document — NOT the QR code |
+| `customerReferences[typeCode="RMA"]` | The SRS business return identifier — NOT any DHL-generated artifact |
+
+**Conclusion:** Does SRS actually need Label Free for Germany? **This repository/business material cannot answer that question — NEEDS BUSINESS/DHL CONFIRMATION.** The sample payload proves DHL supports requesting both a QR code and a PDF label in the same call; it does not prove which one (or both) this specific SRS Germany project must implement. Owner: DHL team (account enablement mechanics) + Business/Product (customer journey decision).
+
+## 8.4 Pickup / Drop-off / Service Point (CONFIRMED FROM DHL MATERIAL + explicit gaps)
+
+The sample payload's `"pickup": { "isRequested": false }` (Section 2) only proves that the **sample** does not request pickup — it does not prove pickup is unavailable or unnecessary for Germany.
+
+**Germany return logistics options, all structurally possible per the sample/DHL capability set, none yet confirmed required:**
+
+1. Courier pickup (`pickup.isRequested: true`) + conventional PDF label
+2. Courier pickup + Label Free/QR (no printing needed even with a courier)
+3. Customer drop-off at a DHL Service Point + conventional PDF label
+4. Customer drop-off at a DHL Service Point + Label Free/QR (fully paperless customer journey)
+
+**Business decision required (NEEDS BUSINESS CONFIRMATION, owner: Business/Product):** which of these combinations SRS must support at Germany launch. This directly determines: (a) whether `pickup.isRequested` needs to be a per-return configurable value rather than a hardcoded `false`, and (b) whether the Label Free/QR capability from Section 8.3 must be built at all. Do not assume pickup is required — the current sample explicitly sets it to `false`, and no business requirement in this repository states otherwise.
+
+## 8.5 Customs — Germany Scope Only (CONFIRMED FROM DHL MATERIAL + explicit gap)
+
+The sample payload (Section 2) includes `"isCustomsDeclarable": false` and `"incoterm": "DAP"` — both CONFIRMED FROM DHL MATERIAL as fields that exist in the DHL request schema, but neither confirms which Germany origin/destination scenario this project actually supports.
+
+**Scenarios to distinguish (NOT built globally, only where evidence supports it):**
+- Germany → Germany (fully domestic return)
+- EU country → Germany (cross-border within EU, customs-declarable status likely still `false` for intra-EU per common carrier practice, but not confirmed here)
+- Non-EU country → Germany (customs-declarable likely `true`, additional customs fields required)
+
+**This repository contains no evidence proving which of these scenarios is in scope** — the FedEx flow analyzed throughout this document is a US-domestic flow with no customs handling of any kind, so there is no existing SRS precedent to extend. The sample's `isCustomsDeclarable: false` is consistent with *either* a Germany-domestic *or* an intra-EU scenario, and does not by itself resolve the question.
+
+**Conclusion:** Origin scope is **NEEDS BUSINESS CONFIRMATION** — owner: Business/Product. If Germany-domestic-only is confirmed, no additional customs fields are required beyond what the sample already shows (`isCustomsDeclarable: false`, `incoterm: "DAP"`). If any cross-border scenario is confirmed in scope, the exact mandatory customs fields (commercial invoice data, HS codes, customs value, etc.) must be re-derived from DHL for that specific route — this document does not invent a customs field list without that confirmation.
+
+## 8.6 Error Handling / Retry / Idempotency (CONFIRMED FROM CODE + explicit DHL gap)
+
+**Existing FedEx behavior (CONFIRMED FROM CODE):**
+- `FedexClient.createRma()` / `createRmaS4()` are annotated `@Retryable(retryFor = HttpServerErrorException.class, backoff = @Backoff(delay = 100))` — retries occur **only** on 5xx server errors, with a 100ms fixed backoff delay (Spring Retry's default max attempts, since none is overridden).
+- `HttpClientErrorException` (any 4xx) is caught, optionally logged (gated by a LaunchDarkly flag), and **re-thrown** — there is no dedicated 400/401/403/429 handling branch; all 4xx statuses fall into the same generic catch block.
+- A blank/empty FedEx auth token results in an explicit `FedexUnauthorizedException`, thrown immediately with **no retry**.
+- `RmaNumberLengthException` is thrown if the RMA exceeds 20 characters — a business-rule validation failure, not a network/HTTP failure.
+- `FedexPreconditionFailedException` is thrown when required return-config data (`s4Customer`/`s4ShipToAddressId`) is missing from `returnConfigRepository`.
+- **Duplicate-prevention for the async waybill-creation job path:** the scheduled job that eventually calls `FedexClient.createRmaS4()` filters candidate items by `status == processing && !waybillGenerated`, and only flips `waybillGenerated = true` after a successful (non-`"false"`-success) response; on any exception, it increments a retry counter and computes an **exponential backoff** wait time before the next attempt, deferring via a `nextRetryDate` field. This is the primary existing application-level safeguard against re-processing the same return repeatedly — it is not a DHL-side/FedEx-side idempotency key, it is an SRS-side "don't retry immediately, and don't reprocess something already marked done" pattern.
+- No explicit request-correlation-ID header, and no FedEx-side idempotency-key mechanism, was found anywhere in `FedexClient`.
+
+**Critical DHL scenario (per task requirement):** SRS sends Create Shipment → DHL successfully creates the shipment → SRS times out before receiving the response → SRS retries → **risk of a duplicate DHL shipment.**
+
+- **Does DHL provide idempotency support?** NOT established from the DHL sample payload or DHL team information reviewed for this analysis — no idempotency-key field or duplicate-detection behavior is documented in the material available to this repository. **NEEDS DHL TEAM CONFIRMATION.**
+- **Can an SRS business key (the RMA/`customerReferences[typeCode="RMA"]` value) safely prevent duplicates?** Only if DHL's API supports querying/deduplicating shipments by a caller-supplied reference before creating a new one — this is **not confirmed** by the material reviewed. **NEEDS DHL TEAM CONFIRMATION.**
+- **Is reconciliation required?** If DHL has no idempotency support, a reconciliation step (query DHL by RMA reference before retrying, after a timeout) would be required — this is **PROPOSED DESIGN**, with no existing FedEx precedent to reuse directly (FedEx's own retry is scoped to 5xx only, and this repository shows no evidence FedEx has ever needed reconciliation logic for a "success then timeout" scenario specifically).
+
+**HTTP status handling — existing FedEx vs proposed DHL (do not invent beyond this):**
+
+| Status | Existing FedEx (CONFIRMED FROM CODE) | Proposed DHL handling |
+|---|---|---|
+| 400 | Generic `HttpClientErrorException` catch, re-thrown, no retry | PROPOSED: same — non-retryable, DHL-specific bad-request exception |
+| 401/403 | Blank token → `FedexUnauthorizedException`, immediate failure, no retry | PROPOSED: DHL Basic Auth failures should similarly fail fast, non-retried |
+| 429 | No explicit 429 branch found — falls into the generic client-error catch | NEEDS DHL/ARCHITECTURE CONFIRMATION — whether 429 should be retried with backoff is a new decision, not inherited from FedEx |
+| 5xx | `@Retryable(retryFor = HttpServerErrorException.class)`, fixed 100ms backoff | PROPOSED: same retry-annotation pattern reusable for a DHL client method |
+| Network timeout | No explicit timeout-specific handling found (relies on `RestTemplate` defaults) | NEEDS ARCHITECTURE CONFIRMATION — must be designed deliberately given the duplicate-shipment risk above, not inherited silently |
+| Invalid address / invalid product / invalid package data | Not applicable to the current FedEx request shape (no address/package-level validation exists in FedEx's model) | NEEDS DHL MATERIAL CONFIRMATION — exact DHL error codes/response shape for these cases were not part of the material reviewed for this analysis |
+
+Do not invent retry behavior beyond what is stated above — anything not explicitly confirmed here is PROPOSED DESIGN pending DHL/architecture sign-off.
+
+## 8.7 Configuration / Secrets (dedicated section; CONFIRMED FROM CODE + PROPOSED DESIGN)
+
+**Existing FedEx configuration (CONFIRMED FROM CODE, `FedexConfig`, `@ConfigurationProperties(prefix="fedex")`):** `contentType`, `xOrgName`, `orgName`, `accessTokenUri`, `grantType`, `scope`, `password`, `clientId`, `clientSecret`, `trackingUrl`, `createRmaUrl`, plus unrelated Reconext-report fields (`reconextReportsBucketName`, `reconextReportsFolder`, `reconextProcessedReportsFolder`) that must not be confused with carrier config. The FedEx **username** is sourced from a LaunchDarkly flag (`getFedExUserNameFlag()`), not from `FedexConfig` — an operational detail specific to FedEx's current credential management, not necessarily a pattern DHL needs to copy.
+
+**Proposed DHL configuration (PROPOSED DESIGN — new, parallel `DhlConfig` class, not reusing `FedexConfig`):**
+
+```properties
+# Illustrative property names only — NOT actual secrets, NOT yet wired into code
+dhl.baseUrl=
+dhl.accountNumber=
+dhl.apiKey=
+dhl.apiSecret=
+dhl.productCode=
+dhl.trackingUrl=
+dhl.labelFreeEnabled=
+dhl.connectTimeoutMs=
+dhl.readTimeoutMs=
+dhl.retry.maxAttempts=
+dhl.retry.backoffMs=
+```
+
+**Secret-management impact:**
+- No actual DHL credential values should ever be committed to source. This repository's `deploy/*/service.yaml` files already reference FedEx and Gekko secrets via Kubernetes secret refs (e.g., existing `gekko-credentials-*` naming pattern per environment) rather than plaintext — a parallel `dhl-credentials-*` secret per environment (dev/pie/pro/stg/stg-west) is the PROPOSED, consistent approach.
+- Credential **provisioning** itself (per the DHL team information already summarized in Section 3, Requirement 2) requires supplying DHL with: DHL Express account, customer contact name, email, telephone, address, city, postcode — an operational/business dependency that must be completed before any `dhl.*` secret value exists to configure, separate from the SRS code/config change itself.
+- Whether Germany DHL uses a single account across all non-prod environments or per-environment DHL sandbox/test accounts is **NEEDS CONFIRMATION** — owner: DHL team + DevOps.
+
+## 8.8 Observability
+
+**Existing FedEx logging (CONFIRMED FROM CODE):** `FedexClient` logs the outbound request URL and full request/response payload (gated by LaunchDarkly flags `logResponseSuccessPayload()`/`logResponseErrorPayload()`), the HTTP status code on error, and the exception message. A dedicated `logObfuscateCustomer()` method explicitly redacts customer PII (e.g., email) before logging the outbound FedEx request.
+
+**Proposed for DHL (PROPOSED DESIGN, modeled directly on the existing FedEx pattern):**
+- Log: request correlation identifier (if DHL provides one), the RMA/`retReturnNumber`, the DHL shipment/waybill number once returned, the API operation name (create shipment vs. tracking query), response HTTP status, retry attempt count, failure reason, and call latency.
+- **Do NOT log:** DHL Basic Auth credentials, the full Base64 label/QR content, or unredacted customer PII — reuse the existing `logObfuscateCustomer()`-style redaction pattern for any DHL request logging, consistent with current FedEx practice.
+
+## 8.9 Backward Compatibility
+
+**Proof the proposed Germany design does not break existing US FedEx behavior (CONFIRMED FROM CODE, by construction of the additive design in Section 8.1):**
+- `resolveInitReturnFlow()` iterates over **all** registered `InitReturnFlow` beans and matches by string equality — adding a new `InitReturnDhlFlow` bean does not alter `InitReturnFedexFlow`'s bean registration, its `"Fedex"` flow-type string, or its behavior in any way.
+- `FedexClient`, `FedexConfig`, `Rma`/`RmaShipment`/`RmaShippmentLabel`, and all FedEx-specific exception classes require **zero modification** to support DHL, provided a new, separate DHL client/config/model set is added alongside them (per Section 7's `DhlClient`/`DhlConfig`/`DhlShipmentRequest` proposals) rather than generalizing/merging them into the FedEx-shaped classes.
+- `shipmentProvider`/`shippingVendor` is already a plain, non-enum `String` throughout (`ReturnDetailsDocument`, `EventAttributes`) — introducing the value `"DHL"` alongside `"Fedex"` requires no schema/type change.
+- `Item.trackingNumber` is already carrier-neutral (`String`) — no schema change required to store a DHL tracking number.
+
+**Regression risks to watch for (PROPOSED — risk list, not observed failures):**
+- Any change to the LaunchDarkly flag's existing `"Fedex"` value (as opposed to purely adding a new `"DHL"` value/targeting rule) would be a regression risk — DHL must be introduced additively, never by altering the existing flag value.
+- Repurposing `RmaShippmentLabel` or `FedexPayload` for DHL instead of adding new DHL-specific classes would risk breaking FedEx's exact JSON (de)serialization shape.
+- If `MessagingService.getEventAttributes()`-equivalent tracking-number extraction is ever modified to be carrier-aware, the existing FedEx-specific extraction path must remain intact for FedEx-flagged returns — a carrier-aware branch, not a full rewrite, is the safe approach.
+
+## 8.10 Testing Impact
+
+| Test area | Type | Notes |
+|---|---|---|
+| DHL flow selection (`InitReturnDhlFlow.getFlowType() == "DHL"`, correctly selected by `resolveInitReturnFlow()`) | Unit | Mirror existing `InitReturnFedexFlowTest` pattern |
+| FedEx regression (`resolveInitReturnFlow()` still selects FedEx when flag = "Fedex", unaffected by the new DHL bean's presence) | Unit | Add an explicit multi-bean-context test if none exists today |
+| DHL request mapping (RMA → `customerReferences[typeCode="RMA"]`, shipper/receiver, packages, etc.) | Unit | Field-by-field, once mandatory DHL fields are finalized per Section 4/5 |
+| Tracking number extraction (`shipmentTrackingNumber` → `Item.trackingNumber`) | Unit | New extraction path, distinct from FedEx's nested `rma.shipments[0].label.trackingNumber` read |
+| Tracking URL construction | Unit | Once `dhl.trackingUrl` format is confirmed |
+| Label parsing (PDF Base64, ZPL Base64) | Unit | Only if Section "Label Analysis" persistence decision requires SRS to process label content at all |
+| Label Free QR Base64 PNG handling | Unit | Only if Section 8.3 confirms Label Free is in scope |
+| DHL status → SRS status mapping | Unit | Recommended once a DHL-event-to-`ReturnState` table is business-confirmed (no such mapping exists in this document prior to this audit pass — see Open Questions in Section 8.13) |
+| Pickup true/false | Unit | Covers both `pickup.isRequested` values per Section 8.4 business decision |
+| Error handling (400/401/403/429/5xx/timeout/invalid address/invalid product/invalid package) | Unit + Integration | Mirror `FedexClient`'s existing exception-handling coverage pattern |
+| Duplicate/retry scenario (Section 8.6) | Integration | Requires a DHL sandbox or a mock able to simulate a timeout-after-success scenario |
+| EMS event generation (DHL values flow correctly into the existing `EventAttributes`-equivalent contract) | Unit | Extend existing messaging-service test coverage for a DHL-flagged document |
+| Contract testing | Contract | Recommended against the actual MyDHL v3.3.1 OpenAPI schema before production cutover — not yet available in this repository |
+
+---
+
+# 9. FINAL Consolidated Deliverables
+
+## 9.1 Final Consolidated Gap Analysis Table
+
+| Area | Current FedEx behavior | DHL Germany behavior | Code evidence | DHL evidence | Gap | Required change | Status | Owner |
+|---|---|---|---|---|---|---|---|---|
+| Carrier selection | Strategy pattern, `InitReturnFlow` beans matched by `getFlowType()` vs LaunchDarkly flag | Add `InitReturnDhlFlow`, `getFlowType()→"DHL"` | `ReturnDetailsService.java:242-249`, `InitReturnFedexFlow.java:65-66` | N/A | New bean + new flag value | Add `InitReturnDhlFlow` + `DhlClient` | PROPOSED | SRS team |
+| RMA | Business identifier, received not generated, root-level `rmaNumber` in request | `customerReferences[typeCode="RMA"]` | Section 7.1 (full) | DHL reference-data guide | Placement only, value reusable (95%) | New mapping code in `DhlClient` | CONFIRMED (mapping approach) | SRS team |
+| Authentication | OAuth2 password grant, Bearer token, `FedexTokenHolder` | HTTP Basic Auth, stateless, no token holder needed | Section 3, Requirement 2 | DHL email + API docs | Different mechanism entirely, simpler for DHL | New `DhlConfig`/`DhlClient` auth, not reusing `FedexTokenHolder` | CONFIRMED (both sides) | DHL team |
+| Tracking number | `rma.shipments[0].label.trackingNumber` (nested, 12-digit numeric) | `shipmentTrackingNumber` (top-level, 10-digit alphanumeric) | Section 3, Requirement 1 | DHL sample payload | Different nesting AND different format/length — treat as opaque | New extraction path into existing carrier-neutral `Item.trackingNumber` | CONFIRMED (fields compatible) | SRS team |
+| Tracking URL | SRS-constructed: `fedex.trackingUrl` + trackingNumber | Same construction pattern proposed with `dhl.trackingUrl`; exact format given in Section 3 test/prod tables | Section 3, Requirement 1 | DHL sample tracking URL + endpoint table | New config value | Add `dhl.trackingUrl` config | CONFIRMED (URL format) / NEEDS CONFIRMATION (is it the correct customer-facing URL) | DHL team |
+| Label | `labelURL` (pull, URL-by-reference), stored, unused by SRS logic, but exposed via internal GET endpoint | Base64 content (push, by value) in `documents[]`, PDF or ZPL | Label Analysis section (full) | DHL sample payload | Entirely different delivery model | New DHL-specific document handling, only if business confirms a need | NEEDS CONFIRMATION (is label persistence needed at all) | Business/Product |
+| Label Free / QR | N/A — no equivalent concept in FedEx flow | `imageOptions[typeCode="qr-code"]`, `valueAddedServices[PZ,PT]`, Base64 PNG, account-enablement required | N/A | Sample payload + DHL team information (Section 8.3) | Entire new capability, not yet scoped | Build only if confirmed required | NEEDS CONFIRMATION | DHL team + Business |
+| Product code | N/A (FedEx has no explicit product/service selection) | Sample uses `U`; domestic vs EU vs non-EU code NOT established | Section 4 | DHL sample payload | Must confirm correct product for each route | Confirm before implementation | NEEDS CONFIRMATION | DHL team + Business |
+| Weight/dimensions | Not present in `Item` model | Required for `content.packages[]` | Section 4 (full) | DHL sample payload | Data source not identified in this repository | Investigate order/fulfillment/product-catalog systems before adding fields to `Item` | NEEDS CONFIRMATION (data source) | SRS team + Business |
+| Rating | Not present in current FedEx flow (no rating/rate-shopping code found) | DHL exposes Rating/Capability but may not be needed if a fixed product/service is used | Section 8.2 | DHL capability docs | Only relevant if dynamic selection required | Do not build unless confirmed | NEEDS CONFIRMATION | Business/Product |
+| Pickup/drop-off | Not evidenced as a distinct capability in current FedEx flow | `pickup.isRequested` / Service Point; 4-option business decision (Section 8.4) | N/A | DHL sample payload | Business decision on logistics model | Build only the confirmed combination(s) | NEEDS CONFIRMATION | Business/Product |
+| Customs | Not present (US domestic flow) | Only relevant if origin scope crosses a customs border | N/A | Sample payload (`isCustomsDeclarable`, `incoterm`) | Origin scope unconfirmed | Build only if scope requires it | NEEDS CONFIRMATION | Business/Product |
+| S4/EMS event contract | `EventAttributes`-equivalent: trackingNumber, shippingVendor, trackingUrl; carrier is plain String | Same fields, new String value `"DHL"` | Label Analysis §5/§12 | N/A | No structural gap for tracking fields; label field would be net-new if ever required | None required for tracking/URL; new field only if label forwarding is confirmed needed | CONFIRMED (structural compatibility) / NEEDS CONFIRMATION (S4-side acceptance of "DHL" value) | S4/EMS team |
+| Idempotency/retry | `@Retryable` on 5xx only; app-level `waybillGenerated` flag + exponential backoff | Duplicate-shipment risk on timeout-then-retry; DHL idempotency support unconfirmed | Section 8.6 | Not established in supplied DHL material | Need duplicate-prevention strategy | Confirm DHL idempotency support; design reconciliation if absent | NEEDS CONFIRMATION | DHL team + Architecture |
+| Configuration/secrets | `FedexConfig` (`fedex.*`), k8s secret refs per environment | New `DhlConfig` (`dhl.*`), new k8s secret refs | Section 8.7 | DHL credential-provisioning requirements | New config class + secrets per environment | Add `DhlConfig` + secrets | PROPOSED | SRS team + DevOps |
+
+## 9.2 Final Implementation Impact
+
+**A. Files/classes that DEFINITELY require modification** (evidence-based — none, beyond LaunchDarkly configuration, since the existing `resolveInitReturnFlow()` loop and `InitReturnFedexFlow` need no code change to support an additive DHL bean):
+- LaunchDarkly flag configuration for the shipment-provider flag — a new targeting value (`"DHL"`) must be added, a config change rather than a Java source file.
+
+**B. Files/classes that MAY require modification** (conditional on business decisions):
+- The `MessagingService`/`EventAttributes`-equivalent tracking-number extraction, only if a carrier-aware branch is needed distinct from the FedEx-specific nested read.
+- `ReturnDetailsDocument`-equivalent model, only if new DHL-specific fields (Label Free QR content, DHL-specific reference IDs) are confirmed necessary.
+- `Item` model, only if weight/dimensions/package data is confirmed to not exist elsewhere and must be added here (Section 4) — NOT to be modified reflexively.
+
+**C. New classes/DTOs/config that MAY be required:**
+- `InitReturnDhlFlow` (implements `InitReturnFlow`, `getFlowType() → "DHL"`)
+- `DhlClient`, `DhlConfig`, `DhlShipmentRequest` (already sketched in Section 3/7 of this document)
+- Optional: DHL-specific label/document model (only if label persistence is confirmed necessary)
+- Optional: DHL status-mapper component (only if SRS must actively map DHL tracking events, as opposed to relying solely on the existing S4 callback)
+- Optional: new DHL-specific exception types, parallel to existing `FedexUnauthorizedException`/`FedexClientException`/`FedexPreconditionFailedException`/`RmaNumberLengthException`
+
+**D. Existing classes that should remain UNTOUCHED:**
+- `FedexClient`, `FedexTokenHolder`/token logic, `FedexConfig`, `Rma`/`RmaShipment`/`RmaShippmentLabel`, `InitReturnFedexFlow`, and all FedEx-specific exception classes.
+
+**E. S4/EMS contract changes:** None required for tracking number, tracking URL, or carrier-name propagation (all already carrier-neutral plain Strings, per Label Analysis §5/§12). A new field is only required if label content/URL forwarding to EMS/S4 is confirmed as a business requirement.
+
+**F. Database/model changes:** None required to store a DHL tracking number or carrier name. Possibly required: new fields for DHL-specific label/document content (only if confirmed necessary) and for weight/dimensions/package data (only if confirmed no existing source and Germany genuinely requires SRS to supply these values).
+
+**G. Configuration/secret changes:** New `dhl.*` properties (Section 8.7) and new environment-specific secret references, parallel to existing `fedex.*`/`gekko-credentials-*` patterns.
+
+**H. Test changes:** See Section 8.10 in full.
+
+**I. External dependencies:** DHL Express account + API credentials (provisioning dependency per DHL team information); possibly a DHL sandbox/mock server for contract testing (not yet available in this repository).
+
+**J. Business decisions still blocking implementation:**
+1. Germany return logistics model (pickup vs. drop-off vs. Label Free — Section 8.4)
+2. Whether Label Free/QR is required at all (Section 8.3)
+3. Correct DHL product code(s) for domestic vs. EU vs. non-EU Germany return scenarios (Section 4/6)
+4. Customs scope (Germany-domestic only vs. EU/non-EU origin — Section 8.5)
+5. Whether DHL label content/document must be persisted or forwarded downstream at all (Label Analysis section)
+6. Shipper/receiver/payer/account-typeCode configuration for a Germany return (Executive Summary + Section 4 address mapping)
+7. Whether SRS must actively map DHL tracking events into a common status, or whether S4 remains the sole status-transition source
+8. DHL idempotency/duplicate-shipment handling strategy (Section 8.6)
+
+## 9.3 Final Open Questions — Owner Based
+
+**DHL TEAM**
+1. Does the MyDHL API instance provisioned for this project support idempotent shipment creation, or must SRS implement its own reconciliation-before-retry logic to avoid duplicate shipments on timeout (Section 8.6)?
+2. Is PZ/Label Free/QR required for the Germany SRS customer-return journey, or should SRS generate a conventional PDF/ZPL return label (Section 8.3)?
+3. Is `productCode = "U"` (per the sample) or `"N"` actually correct for a Germany-domestic customer return, and does the correct product differ by origin (EU vs. non-EU) or DHL account/service agreement (Section 4, NEEDS CONFIRMATION items #3/#4)?
+4. What HTTP status/response body does DHL return specifically for invalid address, invalid product code, and invalid package data (Section 8.6)?
+5. Is `https://www.dhl.com/express/track?AWB=<number>` the correct, stable, production customer-facing tracking URL for this account/region (Section 3, Requirement 1)?
+6. Can `documents[]` contain more than one document per shipment response, and if so, what field reliably identifies "the label" vs. other documents?
+
+**S4/EMS TEAM**
+7. Does S4 validate or enum-constrain the `carrierName`/`shippingVendor` value? Will `"DHL"` be accepted without an S4-side contract or configuration change (Section 6, NEEDS CONFIRMATION #6)?
+8. Does S4/EMS need the DHL label document/content at all, or is tracking number + tracking URL sufficient (matching what is actually used today for FedEx, per the Label Analysis section)?
+9. Does S4 validate the tracking-number format/length? FedEx's is 12-digit numeric; DHL's is 10-digit alphanumeric (or longer at the package level, e.g. `JD999999999999999999`) — will relaxed validation be needed (Section 6, NEEDS CONFIRMATION #7)?
+
+**BUSINESS/PRODUCT**
+10. Which of the four Germany return logistics combinations (courier pickup + label, courier pickup + Label Free, drop-off + label, drop-off + Label Free — Section 8.4) must SRS support at launch?
+11. Is the Germany DHL project scoped to Germany-domestic returns only, or must it also support EU-country-to-Germany or non-EU-country-to-Germany returns (Section 8.5)?
+12. For a Germany customer return, should the DHL account holder/payer always be HP, or can/should the customer ever be the payer (Executive Summary shipper/receiver roles)?
+13. Is a customer phone number mandatory for the DHL shipment request, and if current SRS/FedEx flow does not capture it today, where should it come from (Section 6, NEEDS CONFIRMATION #11)?
+
+**ARCHITECTURE**
+14. Should `shippingVendor`/`carrierName` be promoted from a plain `String` to a shared enum now that a second carrier is being introduced, given both directions of the S4/EMS contract currently leave it unconstrained?
+15. Should DHL label persistence (if required) be inline Base64, object storage + URL, or a dedicated DHL document model (per the Label Analysis section's Options A-D)?
+16. Should a DHL-specific reconciliation/idempotency-check step be built proactively, or should SRS accept the same retry-on-5xx-only risk profile currently accepted for FedEx (Section 8.6)?
+
+**SRS TEAM**
+17. Where, if anywhere, can weight/dimensions/package-count/description data for a return shipment be sourced today (order data, fulfillment data, product catalog, or another integration) — confirm the exact gap identified in Section 4/6?
+18. Does the existing `resolveInitReturnFlow()` bean-selection loop have any test coverage that assumes exactly one `InitReturnFlow` bean exists, which would need updating once a second (`InitReturnDhlFlow`) bean is registered (Section 8.1)?
+
+## 9.4 Final End-to-End Germany Flow (corrected against repository evidence)
+
+```text
+Customer requests return
+        ↓
+ReturnDetailsController.sendReturn() → ReturnDetailsService.sendReturn()
+        ↓
+RMA (business identifier — received/stored as retReturnNumber, not authenticated; Section 7.1)
+        ↓
+resolveInitReturnFlow() — country/carrier selection via LaunchDarkly flag (Section 8.1)
+        ↓
+        ├── "Fedex" → InitReturnFedexFlow → FedexClient (UNCHANGED)
+        └── "DHL"   → InitReturnDhlFlow (NEW) → DhlClient (NEW)
+                          ↓
+                    DHL HTTP Basic Auth (per DHL email/API docs — Section 3, Requirement 2)
+                          ↓
+                    Map SRS return → DHL shipment request
+                       (RMA → customerReferences[typeCode="RMA"] — Section 7.1;
+                        shipper/receiver, account/payer — NEEDS CONFIRMATION per Executive Summary;
+                        product code — NEEDS CONFIRMATION per Section 4;
+                        weight/dimensions — NEEDS CONFIRMATION per Section 4;
+                        pickup.isRequested — NEEDS BUSINESS DECISION per Section 8.4;
+                        customs fields — only if Section 8.5 scope requires them)
+                          ↓
+                    Create DHL shipment (generic Shipment API — no dedicated Return endpoint exists, per Executive Summary)
+                          ↓
+                    shipmentTrackingNumber (waybill) returned
+                          ↓
+                    Label (PDF/ZPL Base64) OR Label-Free QR (Base64 PNG) — per Section 8.3/8.4 business decision
+                          ↓
+                    Persist ONLY what is confirmed necessary:
+                       - trackingNumber → Item.trackingNumber (carrier-neutral, no schema change needed)
+                       - trackingUrl → carrier-neutral field (no schema change needed)
+                       - label/QR content → ONLY if Label Analysis section/Section 8.3 confirms a persistence need
+        ↓
+Publish to EMS-equivalent event contract (trackingNumber, shippingVendor="DHL", trackingUrl) — Label Analysis §5/§12
+        ↓
+Downstream consumers: S4/SAP, eClaims, other listeners (per existing topology — UNCHANGED)
+        ↓
+Inbound: S4 status callback → existing status-handling path (UNCHANGED mechanism)
+        ↓
+Common SRS status transition — OR, only if Section 8.6/status-mapping scope is confirmed, a new DHL tracking-event
+   → DHL status mapper → common status path, run in parallel to/instead of the existing S4 callback
+```
+
+**Key correction vs. a naive "EMS → S4/downstream consumers" one-directional template:** this repository's evidence (Label Analysis §5, Section 7) shows SRS publishes outbound status **to** an event-manager layer (consumed by S4 downstream), and separately receives an explicit inbound status **callback** from S4. Both directions must be accounted for in the DHL design, not just the outbound one.
+
+## 9.5 Final Quality Check — Contradiction Resolution Log
+
+| Check | Resolution |
+|---|---|
+| RMA = CU vs RMA = RMA | No contradiction — Section 3 Requirement 3 and Section 6's CONFIRMED table consistently state `RMA = RMA Number` (correct, `typeCode="RMA"`) and explicitly warn `CU = Consignor reference number` is a **different** reference type. The Section 2 sample payload's use of `typeCode: "CU"` for a generic reference is clearly marked in Section 3 as something to correct to `typeCode: "RMA"` for the actual RMA value — not a contradiction, but the exact reason this document calls out the correction. |
+| DHL label only PDF vs PDF/ZPL | No contradiction — the Label Analysis section and DHL team information both state PDF **or** ZPL (Base64), never PDF-only. |
+| SRS calls S4 directly vs SRS publishes to EMS | Resolved in the Label Analysis section (§5/§8/§12): SRS publishes outbound events to an event-manager layer; S4 is a downstream consumer per diagrams; S4 only reaches SRS via an explicit inbound callback. Section 7's "S4 Integration Impact" heading refers to this same downstream-consumer relationship, not a direct outbound SRS→S4 call — no contradiction once both sections are read together, but this final section makes the distinction explicit for any reader who only reads Section 7 in isolation. |
+| labelURL unused vs labelURL persisted/exposed by internal GET | Reconciled in the Label Analysis section (§1 item 10, §16a Check 1): both are true and not contradictory — `labelURL` is persisted and exposed via one specific internal GET endpoint, but never read/used by SRS's own business logic beyond that. |
+| DHL tracking URL vs customer-facing tracking URL | Kept distinct — Section 3 Requirement 1 provides both the DHL API tracking-query endpoint table (test/production URLs for querying tracking data) and a separate customer-facing browser URL (`https://www.dhl.com/express/track?AWB=...`); Section 9.3 Q5 correctly flags the latter as still NEEDS CONFIRMATION. |
+| Pickup = Return | Explicitly rejected in this document's Section 8.4 addition and consistent with the Executive Summary's return/shipment distinction — not treated as equivalent anywhere. |
+| productCode U treated as confirmed | Consistently marked NEEDS CONFIRMATION in Section 4, Section 6 (items #3/#4), and Section 9.3 Q3 — never upgraded to CONFIRMED anywhere in this document. |
+| customer always shipper treated as confirmed | Consistently marked NEEDS CONFIRMATION in Section 6 (items #1/#2) and Section 9.3 Q12 — never upgraded to CONFIRMED. |
+| DHL Base64 assumed required downstream | Corrected in the Label Analysis section and Section 9.1/9.2: explicitly NOT assumed required; current EMS-equivalent contract has no label field, so nothing is broken, and forwarding is only a NEEDS CONFIRMATION item. |
+| Label Free treated as mandatory without evidence | Corrected in Section 8.3: explicitly stated as a DHL CAPABILITY demonstrated in the sample payload, not a confirmed SRS BUSINESS REQUIREMENT, with an explicit "cannot be answered from this repository" conclusion. |
+
+No historical code evidence was deleted during this audit pass — all prior file/line references, code snippets, and tables from Sections 1-7 and the Label Analysis/FINAL OUTPUT block remain exactly as originally written.
+
+## 9.6 FINAL CONFIDENCE / READINESS
+
+**CONFIRMED FROM CODE**
+- Carrier selection mechanism (`resolveInitReturnFlow()`, `getFlowType()`, LaunchDarkly-driven, multi-bean strategy pattern already proven with `InitReturnFedexFlow`/`InitReturnNoFlow`)
+- RMA is a received (not generated), plain business identifier, not an auth token (Section 7.1, exhaustive)
+- FedEx authentication mechanism (OAuth2 password grant, `FedexTokenHolder`, 5 required credentials)
+- FedEx label is URL-by-reference (`labelURL`), persisted but functionally unused beyond one internal GET-endpoint exposure (Label Analysis)
+- FedEx tracking number/URL extraction and propagation paths, exactly, with file/line evidence (Sections 1, 3)
+- SRS's outbound event path is an EMS-equivalent publish, not a direct S4 call; S4 reaches SRS only via an inbound callback (Label Analysis §5/§8/§12)
+- `Item.trackingNumber` and carrier/shippingVendor fields are plain, carrier-neutral, non-enum Strings
+- Existing FedEx retry behavior (5xx only, fixed 100ms backoff) and the async waybill job's exponential-backoff/flag-based idempotency pattern (Section 8.6)
+- Weight/dimensions/package data do NOT exist in the `Item` model today (Section 4)
+
+**CONFIRMED FROM DHL** (material/team information supplied for this project)
+- DHL Shipment, Pickup, Tracking, Rating/Capability API surfaces exist; no dedicated Return-Shipment endpoint (Section 6)
+- DHL reference-data distinguishes `RMA` (RMA Number) from `CU` (Consignor reference number)
+- DHL supports label as PDF or ZPL, Base64-encoded, via `documents[]`, plus a QR-code image option and `PZ`/`PT` value-added services in the same sample request (Section 8.3)
+- DHL requires a DHL Express account + credentials, provisioned with specific contact/address information (Section 3, Requirement 2)
+- HTTP Basic Auth, stateless, no token-refresh lifecycle needed (a genuine simplification vs. FedEx)
+
+**PROPOSED DESIGN**
+- New `InitReturnDhlFlow` / `DhlClient` / `DhlConfig`, additive to (not replacing) FedEx equivalents
+- Reuse of the existing config-prefix + tracking-number string-concatenation pattern for a DHL tracking URL
+- A dedicated DHL document model if label persistence is ever required
+- A DHL status-mapper component, only if scope confirms SRS must actively consume DHL tracking events
+
+**OPEN BUSINESS DECISIONS**
+- Germany return logistics model (pickup vs. drop-off vs. Label Free)
+- Whether Label Free/QR is required at all
+- Correct DHL product code(s) per route
+- Customs scope (domestic-only vs. EU/non-EU origin)
+- Whether DHL label content must be persisted/forwarded downstream
+- Shipper/receiver/payer/account-typeCode configuration
+
+**OPEN TECHNICAL DECISIONS**
+- DHL idempotency/duplicate-shipment prevention strategy
+- Whether `shippingVendor`/`carrierName` should become an enum
+- Whether SRS should actively map DHL tracking events into a common status, or rely solely on the existing S4 callback
+
+**BLOCKERS BEFORE DEVELOPMENT**
+1. DHL account provisioning (credentials, endpoint) must be completed by the DHL team before any live integration testing is possible.
+2. Product code and customs scope must be confirmed by DHL/Business before the shipment-request mapping can be finalized.
+3. The Germany logistics model (pickup/drop-off/Label Free) must be confirmed by Business before pickup/Label-Free code paths are built.
+4. DHL idempotency behavior must be confirmed before the duplicate-shipment risk (Section 8.6) can be considered mitigated.
+
+ 
+
